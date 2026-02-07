@@ -438,7 +438,7 @@ def check_single_cell_logic(cell_info, participants):
     query = f"id:{pid} lang:ko ({or_query})"
 
     try:
-        res = requests.get(SOLVED_SEARCH, params={"query": query}, timeout=3)
+        res = requests.get(SOLVED_SEARCH, params={"query": query}, headers=get_headers(), timeout=3)
         if res.status_code != 200 or res.json().get("count", 0) == 0:
             return None, None
     except:
@@ -907,4 +907,5 @@ for r in range(GRID_SIZE):
         with cols[c]:
 
             st.markdown(render_cell_html(cell), unsafe_allow_html=True)
+
 
