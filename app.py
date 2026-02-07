@@ -5,14 +5,13 @@ import time
 import json
 import gspread
 from google.oauth2.service_account import Credentials
-from bs4 import BeautifulSoup  # 크롤링을 위한 필수 라이브러리
 
 # =========================================================
 # 0) 기본 설정
 # =========================================================
 st.set_page_config(
     layout="wide",
-    page_title="BAEKJOON BINGO : BOJ LIVE",
+    page_title="BAEKJOON BINGO : VERIFY MODE",
     initial_sidebar_state="expanded"
 )
 
@@ -33,15 +32,8 @@ LEVEL_MAPPING = {
     5: "26..30",
 }
 
-# 문제 검색 및 유저 정보는 여전히 Solved.ac API 사용 (편의성)
 SOLVED_SEARCH = "https://solved.ac/api/v3/search/problem"
 SOLVED_USER_SHOW = "https://solved.ac/api/v3/user/show"
-
-def get_headers():
-    return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-    }
 
 # =========================================================
 # 1) UI 스타일
@@ -151,7 +143,7 @@ def clear_state():
         del st.session_state[k]
 
 # =========================================================
-# 3) Solved.ac API (유저/문제 검색용)
+# 3) Solved.ac API
 # =========================================================
 TIER_NAMES = ["Unrated"] + [f"{r} {5-i}" for r in ["Bronze","Silver","Gold","Platinum","Diamond","Ruby"] for i in range(5)]
 def tier_to_name(tier: int):
@@ -159,14 +151,14 @@ def tier_to_name(tier: int):
         return "?"
     return TIER_NAMES[tier] if 0 <= tier < len(TIER_NAMES) else str(tier)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=300)
 def solved_user_exists(handle: str):
     try:
         return requests.get(f"{SOLVED_USER_SHOW}?handle={handle}", timeout=3).status_code == 200
     except:
         return False
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=300)
 def fetch_user_tier(handle: str):
     try:
         res = requests.get(f"{SOLVED_USER_SHOW}?handle={handle}", timeout=3)
@@ -185,96 +177,29 @@ def fetch_problems_with_filter(level: int, user_filter_query: str):
         return []
 
 # =========================================================
-# [수정됨] 크롤링 + API 하이브리드 방식
+# [핵심] 해결 여부 조회 (User + Problem ID 매칭)
 # =========================================================
-def fetch_submission_info(submission_id: int):
+def check_user_cleared_problem(handle: str, problem_id: int):
     """
-    1차 시도: BOJ 직접 크롤링 (실시간, 빠름)
-    2차 시도: 실패 시 Solved.ac API (안전함, 약간의 갱신 지연 있음)
+    Solved.ac API의 고급 검색 기능을 사용합니다.
+    쿼리: "id:{문제번호} s@{유저명}"
+    이 쿼리의 결과가 존재하면(items 개수가 0보다 크면) 푼 것으로 간주합니다.
     """
-    
-    # --- 1. BOJ 크롤링 시도 ---
+    query = f"id:{problem_id} s@{handle}"
     try:
-        url = f"https://www.acmicpc.net/status?solution_id={submission_id}"
-        # 헤더를 실제 브라우저와 최대한 유사하게 설정
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Referer": "https://www.acmicpc.net/",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-User": "?1"
-        }
-        
-        res = requests.get(url, headers=headers, timeout=3)
-        
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            row = soup.find("tr", id=f"solution-{submission_id}")
-            
-            if row:
-                # 1. 아이디
-                user_link = row.find("td", class_="user").find("a")
-                handle = user_link.text.strip() if user_link else None
-                
-                # 2. 문제번호
-                problem_link = row.find("td", class_="problem").find("a")
-                pid = int(problem_link.text.strip()) if problem_link else None
-                
-                # 3. 결과 텍스트 추출
-                result_td = row.find("td", class_="result")
-                result_text = result_td.get_text(strip=True) if result_td else ""
-
-                # "맞았습니다!!" -> "AC" 변환
-                final_result = "AC" if "맞았습니다" in result_text else result_text
-                
-                print(f"[BOJ Crawl] Success: {handle} / {pid} / {final_result}")
-                return {
-                    "problemId": pid,
-                    "handle": handle,
-                    "result": final_result
-                }
-        else:
-            print(f"[BOJ Crawl] Blocked or Failed: Status {res.status_code}")
-            
-    except Exception as e:
-        print(f"[BOJ Crawl] Error: {e}")
-
-    # --- 2. 실패 시 Solved.ac API 폴백 (Fallback) ---
-    try:
-        print(f"[System] Fallback to Solved.ac API for #{submission_id}...")
         res = requests.get(
-            "https://solved.ac/api/v3/submission/show",
-            params={"submissionId": submission_id},
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            SOLVED_SEARCH, 
+            params={"query": query}, 
+            headers={"Accept": "application/json"},
             timeout=5
         )
-        
         if res.status_code == 200:
             data = res.json()
-            # solved.ac 응답에서 정보 추출
-            if data:
-                pid = data.get("problem", {}).get("problemId")
-                handle = data.get("user", {}).get("handle")
-                result = data.get("result") # solved.ac는 보통 'ac', 'wa' 등을 반환할 수 있음
-                
-                # 결과값 대소문자 처리 ('ac' -> 'AC')
-                final_result = "AC" if result and result.upper() == "AC" else result
-                
-                return {
-                    "problemId": pid,
-                    "handle": handle,
-                    "result": final_result
-                }
-    except Exception as e:
-        print(f"[Solved.ac API] Error: {e}")
-
-    # 둘 다 실패한 경우
-    return None
+            # 검색 결과가 있으면(count > 0) 푼 문제입니다.
+            return data.get("count", 0) > 0
+        return False
+    except:
+        return False
 
 # =========================================================
 # 4) 게임 로직
@@ -373,53 +298,36 @@ def find_cell_by_problem_id(pid: int):
                 return (r, c)
     return None
 
-def apply_submission_capture(submission_id: int):
-    """
-    제출번호를 입력받아 BOJ를 크롤링하고 점령 처리
-    """
-    # 1) BOJ 직접 크롤링
-    info = fetch_submission_info(submission_id)
-    
-    if not info:
-        st.error("❌ 제출번호를 조회할 수 없습니다. (존재하지 않거나 BOJ 응답 실패)")
-        return
-
-    pid = info.get("problemId")
-    handle = info.get("handle")
-    result = info.get("result")
-
-    # 2) AC 여부 확인
-    if result != "AC":
-        st.error(f"❌ 정답(AC)이 아닙니다. (결과: {result})")
-        return
-
-    # 3) 참가자 여부 확인
+def verify_and_capture(handle: str, pid: int):
+    # 1) 참가자 확인
     participants = st.session_state.participants
     if handle not in participants:
-        st.error(f"❌ 등록된 참가자가 아닙니다: {handle}")
+        st.error(f"참가자가 아닙니다: {handle}")
         return
 
-    # 4) 보드에 있는 문제인지 확인
+    # 2) 보드 확인
     pos = find_cell_by_problem_id(pid)
     if not pos:
-        st.error(f"❌ 현재 빙고판에 없는 문제입니다: #{pid}")
+        st.error(f"보드에 없는 문제입니다: #{pid}")
         return
-
+    
     r, c = pos
     cell = st.session_state.board[r][c]
-
     winner_team = participants[handle]
 
-    # 이미 같은 팀이면 중복 점령 방지
+    # 3) 중복 확인
     if cell["owner"] == winner_team:
-        st.warning(f"⚠️ 이미 {winner_team} 팀이 점령한 칸입니다.")
+        st.warning("이미 우리 팀 땅입니다.")
         return
 
-    # 5) 점령 처리
-    update_cell_after_win(cell, winner_team, handle)
-    st.toast(f"🎉 {winner_team} 점령 성공! (#{pid} by {handle})", icon="🏁")
-    time.sleep(0.7)
-    st.rerun()
+    # 4) Solved.ac 조회 (핵심)
+    if check_user_cleared_problem(handle, pid):
+        update_cell_after_win(cell, winner_team, handle)
+        st.toast(f"🎉 인증 성공! {winner_team} 팀이 점령했습니다.", icon="✅")
+        time.sleep(1)
+        st.rerun()
+    else:
+        st.error(f"❌ 아직 Solved.ac에 반영되지 않았거나 풀지 않았습니다.\n(Solved.ac 프로필에서 '갱신' 버튼을 눌러보세요.)")
 
 def check_winner():
     board = st.session_state.board
@@ -520,7 +428,7 @@ init_state()
 st.markdown("""
 <div style="margin-bottom: 20px;">
   <div style="font-size: .95rem; color: var(--muted2); font-weight: 800; letter-spacing: .5px;">⚔️ BAEKJOON</div>
-  <div style="font-size: 2.4rem; font-weight: 1000; letter-spacing: -1px;">BINGO ARENA <span style="font-size:1rem; color:#22b8cf;">BOJ LIVE</span></div>
+  <div style="font-size: 2.4rem; font-weight: 1000; letter-spacing: -1px;">BINGO ARENA <span style="font-size:1rem; color:#22b8cf;">VERIFY MODE</span></div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -576,16 +484,20 @@ with st.sidebar:
             st.rerun()
 
     else:
-        st.success("🟢 게임 진행 중 (BOJ Live Mode)")
-        st.markdown("### 🧾 제출번호로 점령")
+        st.success("🟢 게임 진행 중")
+        st.markdown("### 🔍 해결 인증")
+        st.info("제출번호 대신 '푼 사람'과 '문제번호'를 입력하세요.")
 
-        sub_id_str = st.text_input("제출번호 입력", placeholder="예: 89501234", key="sub_id_input")
+        all_players = st.session_state.red_users + st.session_state.blue_users
+        
+        # UI: 누가 풀었나?
+        selected_player = st.selectbox("1. 푼 사람 선택", all_players)
+        
+        # UI: 몇 번을 풀었나?
+        target_pid = st.number_input("2. 문제 번호 입력", min_value=1000, value=1000, step=1)
 
-        if st.button("🏁 제출 확인 & 점령", type="primary", use_container_width=True):
-            if not sub_id_str.strip().isdigit():
-                st.error("제출번호는 숫자만 입력하세요.")
-            else:
-                apply_submission_capture(int(sub_id_str.strip()))
+        if st.button("✅ 인증 확인 및 점령", type="primary", use_container_width=True):
+            verify_and_capture(selected_player, int(target_pid))
 
         st.markdown("---")
         st.markdown("### 📜 Logs")
@@ -656,4 +568,3 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
-
