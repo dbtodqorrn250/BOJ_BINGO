@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import re
 import random
 import time
 import concurrent.futures
@@ -197,46 +198,72 @@ def fetch_problems_with_filter(level: int, user_filter_query: str):
     except: return []
 
 # =========================================================
-# [수정] 프로필 페이지 전용 파싱 로직 (캐싱 방지)
+# [수정] 실시간 반영을 위한 하이브리드 크롤링
 # =========================================================
+
+def get_headers():
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+        "Referer": "https://www.acmicpc.net/",
+    }
 
 def get_user_solved_set(session, user_id: str):
     """
-    오직 유저 프로필 페이지(acmicpc.net/user/xxx)에서만
-    '맞은 문제' 목록을 긁어옵니다.
+    [하이브리드 수집]
+    1. 프로필 페이지: 전체 푼 문제 (업데이트 느림, 대량 데이터)
+    2. 채점 현황판: 최근 푼 문제 (업데이트 즉시, 소량 데이터)
+    => 두 결과를 합쳐서 반환합니다.
     """
-    # 1. 캐싱 방지를 위해 URL 뒤에 의미 없는 난수(?t=...)를 붙임
-    url = f"https://www.acmicpc.net/user/{user_id}?t={time.time()}"
-    
     solved = set()
+    
+    # -----------------------------------------------------
+    # 1. [실시간] 채점 현황판 크롤링 (가장 중요)
+    # -----------------------------------------------------
+    # result_id=4 (맞았습니다) 필터 적용
+    url_status = f"https://www.acmicpc.net/status?user_id={user_id}&result_id=4"
     try:
-        # 헤더는 봇 차단 방지용
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
+        # 캐싱 방지용 헤더 추가
+        headers = get_headers()
+        headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        headers["Pragma"] = "no-cache"
         
-        res = session.get(url, headers=headers, timeout=5)
-        
+        res = session.get(url_status, headers=headers, timeout=5)
+        if res.status_code == 200:
+            # 채점 현황판에 있는 문제 번호 링크(/problem/xxxx)를 정규식으로 모두 추출
+            # BeautifulSoup보다 정규식이 빠르고 HTML 구조 변화에 강함
+            found_ids = re.findall(r'/problem/(\d+)', res.text)
+            for pid in found_ids:
+                solved.add(int(pid))
+        else:
+            print(f"Status check failed for {user_id} (Code: {res.status_code})")
+    except Exception as e:
+        print(f"Error fetching status for {user_id}: {e}")
+
+    # -----------------------------------------------------
+    # 2. [전체] 프로필 페이지 크롤링
+    # -----------------------------------------------------
+    url_profile = f"https://www.acmicpc.net/user/{user_id}"
+    try:
+        res = session.get(url_profile, headers=get_headers(), timeout=5)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
             
-            # [핵심 수정]
-            # .problem_number 클래스 대신, 
-            # <div class="problem-list"> 안에 있는 모든 <a> 태그를 찾습니다.
-            # 백준 프로필에서 첫 번째 .problem-list가 '맞은 문제' 영역입니다.
+            # '맞은 문제' 영역 찾기 (.problem-list)
+            # 보통 첫 번째 .problem-list가 맞은 문제임
             problem_list_div = soup.select_one(".problem-list")
             
             if problem_list_div:
                 links = problem_list_div.select("a")
                 for link in links:
                     txt = link.text.strip()
-                    # 텍스트가 숫자인지 확인하고 추가
                     if txt.isdigit():
                         solved.add(int(txt))
-                        
+        else:
+            print(f"Profile check failed for {user_id} (Code: {res.status_code})")
     except Exception as e:
-        print(f"Error fetching user {user_id}: {e}")
-        
+        print(f"Error fetching profile for {user_id}: {e}")
+
     return solved
 
 def get_submission_id_optimized(session, user_id: str, problem_id: int):
@@ -620,4 +647,5 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
+
 
