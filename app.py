@@ -2,18 +2,17 @@ import streamlit as st
 import requests
 import random
 import time
-import concurrent.futures
 import json
 import gspread
 from google.oauth2.service_account import Credentials
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup  # 크롤링을 위한 필수 라이브러리
 
 # =========================================================
 # 0) 기본 설정
 # =========================================================
 st.set_page_config(
     layout="wide",
-    page_title="BAEKJOON BINGO : SOLVED.AC",
+    page_title="BAEKJOON BINGO : BOJ LIVE",
     initial_sidebar_state="expanded"
 )
 
@@ -34,16 +33,14 @@ LEVEL_MAPPING = {
     5: "26..30",
 }
 
+# 문제 검색 및 유저 정보는 여전히 Solved.ac API 사용 (편의성)
 SOLVED_SEARCH = "https://solved.ac/api/v3/search/problem"
 SOLVED_USER_SHOW = "https://solved.ac/api/v3/user/show"
 
-# 제출 조회 (핵심)
-SOLVED_SUBMISSION_SHOW = "https://solved.ac/api/v3/submission/show"
-
 def get_headers():
     return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept": "application/json"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
     }
 
 # =========================================================
@@ -154,7 +151,7 @@ def clear_state():
         del st.session_state[k]
 
 # =========================================================
-# 3) Solved.ac API
+# 3) Solved.ac API (유저/문제 검색용)
 # =========================================================
 TIER_NAMES = ["Unrated"] + [f"{r} {5-i}" for r in ["Bronze","Silver","Gold","Platinum","Diamond","Ruby"] for i in range(5)]
 def tier_to_name(tier: int):
@@ -188,46 +185,44 @@ def fetch_problems_with_filter(level: int, user_filter_query: str):
         return []
 
 # =========================================================
-# [핵심] 제출번호로 정보 가져오기 (BOJ 직접 크롤링 버전)
+# [핵심] 제출번호 확인 (BOJ 직접 크롤링)
 # =========================================================
 def fetch_submission_info(submission_id: int):
     """
-    백준(acmicpc.net)의 현황 페이지를 크롤링하여
-    problemId, handle, result를 가져옴.
+    백준(acmicpc.net)의 현황 페이지를 직접 크롤링하여
+    solved.ac API 갱신 지연 없이 즉시 결과를 확인합니다.
     """
     url = f"https://www.acmicpc.net/status?solution_id={submission_id}"
     
-    # BOJ는 User-Agent가 없으면 요청을 차단할 수 있습니다.
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-
     try:
-        res = requests.get(url, headers=headers, timeout=5)
+        # BOJ는 봇 방지를 위해 User-Agent 헤더가 필수입니다.
+        res = requests.get(url, headers=get_headers(), timeout=5)
         if res.status_code != 200:
             return None
         
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # id가 solution-{submission_id} 인 tr 태그를 찾음
+        # id가 solution-{submission_id} 인 tr 태그를 찾습니다.
         row = soup.find("tr", id=f"solution-{submission_id}")
         if not row:
             return None
             
-        # 데이터 파싱 (순서: 제출번호, 아이디, 문제번호, 결과, ...)
-        # 아이디(User)
+        # 데이터 파싱
+        # 1. 아이디 (User)
         user_link = row.find("td", class_="user").find("a")
         handle = user_link.text.strip() if user_link else None
         
-        # 문제번호(Problem ID)
+        # 2. 문제번호 (Problem ID)
         problem_link = row.find("td", class_="problem").find("a")
         pid = int(problem_link.text.strip()) if problem_link else None
         
-        # 결과(Result) - "맞았습니다!!" 등을 확인
-        result_span = row.find("td", class_="result").find("span", class_="result-text")
+        # 3. 결과 (Result) - "맞았습니다!!" 등을 확인
+        # td.result > span.result-text 구조
+        result_td = row.find("td", class_="result")
+        result_span = result_td.find("span", class_="result-text") if result_td else None
         result_text = result_span.text.strip() if result_span else ""
 
-        # BOJ의 "맞았습니다!!"를 우리 로직의 "AC"로 변환
+        # 결과 매핑: "맞았습니다!!" -> "AC"
         final_result = "AC" if result_text == "맞았습니다!!" else result_text
 
         return {
@@ -338,39 +333,34 @@ def find_cell_by_problem_id(pid: int):
 
 def apply_submission_capture(submission_id: int):
     """
-    제출번호를 입력받으면:
-      1) solved.ac submission/show로 pid, handle, result 가져오기
-      2) 참가자(handle)인지 확인
-      3) AC인지 확인
-      4) 보드에 해당 pid가 있는지 확인
-      5) 점령 처리
+    제출번호를 입력받아 BOJ를 크롤링하고 점령 처리
     """
+    # 1) BOJ 직접 크롤링
     info = fetch_submission_info(submission_id)
+    
     if not info:
-        st.error("❌ 제출번호를 조회할 수 없습니다. (solved.ac에서 아직 추적되지 않았거나 잘못된 번호)")
+        st.error("❌ 제출번호를 조회할 수 없습니다. (존재하지 않거나 BOJ 응답 실패)")
         return
 
     pid = info.get("problemId")
     handle = info.get("handle")
     result = info.get("result")
 
-    if not pid or not handle:
-        st.error("❌ 제출 정보 파싱 실패 (solved.ac 응답 이상)")
-        return
-
-    # AC 여부 확인
+    # 2) AC 여부 확인
     if result != "AC":
-        st.error(f"❌ 이 제출은 정답(AC)이 아닙니다. (result={result})")
+        st.error(f"❌ 정답(AC)이 아닙니다. (결과: {result})")
         return
 
+    # 3) 참가자 여부 확인
     participants = st.session_state.participants
     if handle not in participants:
-        st.error(f"❌ 참가자가 아닙니다: {handle}")
+        st.error(f"❌ 등록된 참가자가 아닙니다: {handle}")
         return
 
+    # 4) 보드에 있는 문제인지 확인
     pos = find_cell_by_problem_id(pid)
     if not pos:
-        st.error(f"❌ 보드에 없는 문제입니다: #{pid}")
+        st.error(f"❌ 현재 빙고판에 없는 문제입니다: #{pid}")
         return
 
     r, c = pos
@@ -383,6 +373,7 @@ def apply_submission_capture(submission_id: int):
         st.warning(f"⚠️ 이미 {winner_team} 팀이 점령한 칸입니다.")
         return
 
+    # 5) 점령 처리
     update_cell_after_win(cell, winner_team, handle)
     st.toast(f"🎉 {winner_team} 점령 성공! (#{pid} by {handle})", icon="🏁")
     time.sleep(0.7)
@@ -487,7 +478,7 @@ init_state()
 st.markdown("""
 <div style="margin-bottom: 20px;">
   <div style="font-size: .95rem; color: var(--muted2); font-weight: 800; letter-spacing: .5px;">⚔️ BAEKJOON</div>
-  <div style="font-size: 2.4rem; font-weight: 1000; letter-spacing: -1px;">BINGO ARENA <span style="font-size:1rem; color:#22b8cf;">SOLVED.AC</span></div>
+  <div style="font-size: 2.4rem; font-weight: 1000; letter-spacing: -1px;">BINGO ARENA <span style="font-size:1rem; color:#22b8cf;">BOJ LIVE</span></div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -543,10 +534,10 @@ with st.sidebar:
             st.rerun()
 
     else:
-        st.success("🟢 게임 진행 중 (Submission ID Mode)")
+        st.success("🟢 게임 진행 중 (BOJ Live Mode)")
         st.markdown("### 🧾 제출번호로 점령")
 
-        sub_id_str = st.text_input("제출번호 입력", placeholder="예: 123456789", key="sub_id_input")
+        sub_id_str = st.text_input("제출번호 입력", placeholder="예: 89501234", key="sub_id_input")
 
         if st.button("🏁 제출 확인 & 점령", type="primary", use_container_width=True):
             if not sub_id_str.strip().isdigit():
@@ -623,4 +614,3 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
-
