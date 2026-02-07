@@ -6,6 +6,9 @@ import concurrent.futures
 import pickle
 import os
 from bs4 import BeautifulSoup
+import json
+import gspread
+from google.oauth2.service_account import Credentials
 
 # =========================================================
 # 0) 기본 설정
@@ -266,49 +269,106 @@ a.problem-link:hover{
 
 
 # =========================================================
-# 2) 데이터 저장/불러오기 (Persistence Logic)
+# 2) 데이터 저장/불러오기 (Google Sheets 버전)
 # =========================================================
+# 구글 시트 이름 (아까 만드신 시트 이름과 똑같아야 합니다)
+SHEET_NAME = "BingoData"
+
+def get_google_sheet_connection():
+    """Streamlit Secrets를 이용해 구글 시트 연결"""
+    # Streamlit Secrets에서 인증 정보 가져오기
+    credentials_dict = st.secrets["gcp_service_account"]
+    
+    # 인증 범위 설정
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    
+    creds = Credentials.from_service_account_info(
+        credentials_dict, scopes=scopes
+    )
+    client = gspread.authorize(creds)
+    
+    try:
+        sheet = client.open(SHEET_NAME).sheet1
+        return sheet
+    except Exception as e:
+        st.error(f"구글 시트 연결 실패: {e}")
+        return None
+
 def save_state():
-    keys_to_save = ["game_started", "red_users", "blue_users", "logs", "board", "participants", "used_problem_ids"]
+    """현재 세션 상태를 JSON으로 변환해 구글 시트 A1 셀에 저장"""
+    # 저장할 데이터 추출
+    keys_to_save = ["game_started", "red_users", "blue_users", "logs", "board", "participants"]
     data = {}
     for k in keys_to_save:
         if k in st.session_state:
             data[k] = st.session_state[k]
+            
+    # [중요] set 자료형(used_problem_ids)은 JSON 저장이 안 되므로 list로 변환
+    if "used_problem_ids" in st.session_state:
+        data["used_problem_ids"] = list(st.session_state.used_problem_ids)
     
     try:
-        with open(STATE_FILE, "wb") as f:
-            pickle.dump(data, f)
+        sheet = get_google_sheet_connection()
+        if sheet:
+            # JSON 문자열로 변환하여 A1 셀에 저장
+            json_str = json.dumps(data, ensure_ascii=False)
+            # 셀 내용이 너무 길 수 있으므로 update_acell 대신 update 사용 권장될 수 있으나 
+            # A1 셀 하나에 통째로 넣습니다.
+            sheet.update(range_name='A1', values=[[json_str]])
+            # (옵션) 백업용으로 타임스탬프도 B1에 찍어줄 수 있음
+            # sheet.update(range_name='B1', values=[[str(time.time())]])
     except Exception as e:
-        print(f"Save failed: {e}")
+        print(f"Cloud Save failed: {e}")
 
 def load_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "rb") as f:
-                data = pickle.load(f)
-            for k, v in data.items():
-                st.session_state[k] = v
-            
-            # [NEW] 구버전 데이터 호환성 체크 (capturer 키가 없을 경우 추가)
-            if "board" in st.session_state:
-                board = st.session_state.board
-                for r in range(len(board)):
-                    for c in range(len(board[r])):
-                        if "capturer" not in board[r][c]:
-                            board[r][c]["capturer"] = None
-                            
-            return True
-        except Exception as e:
-            print(f"Load failed: {e}")
+    """구글 시트 A1 셀에서 JSON 데이터를 가져와 복구"""
+    try:
+        sheet = get_google_sheet_connection()
+        if not sheet:
             return False
-    return False
+            
+        # A1 셀 값 읽기
+        val = sheet.acell('A1').value
+        if not val:
+            return False
+            
+        data = json.loads(val)
+        
+        # 데이터 복구
+        for k, v in data.items():
+            st.session_state[k] = v
+            
+        # [중요] list로 저장된 used_problem_ids를 다시 set으로 변환
+        if "used_problem_ids" in data:
+            st.session_state.used_problem_ids = set(data["used_problem_ids"])
+            
+        # 구버전 호환성 체크 (capturer)
+        if "board" in st.session_state:
+            board = st.session_state.board
+            for r in range(len(board)):
+                for c in range(len(board[r])):
+                    if "capturer" not in board[r][c]:
+                        board[r][c]["capturer"] = None
+        
+        return True
+    except Exception as e:
+        print(f"Cloud Load failed: {e}")
+        return False
 
 def clear_state():
-    if os.path.exists(STATE_FILE):
-        os.remove(STATE_FILE)
+    """구글 시트 데이터 삭제 (A1 셀 비우기)"""
+    try:
+        sheet = get_google_sheet_connection()
+        if sheet:
+            sheet.update(range_name='A1', values=[['']])
+    except Exception as e:
+        print(f"Cloud Clear failed: {e}")
+        
     for k in list(st.session_state.keys()):
         del st.session_state[k]
-
 
 # =========================================================
 # 3) solved.ac + 백준 크롤링 로직
@@ -847,3 +907,4 @@ for r in range(GRID_SIZE):
         with cols[c]:
 
             st.markdown(render_cell_html(cell), unsafe_allow_html=True)
+
