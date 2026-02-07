@@ -19,7 +19,11 @@ st.set_page_config(
 GRID_SIZE = 5
 MAX_LEVEL = 5
 STATE_FILE = "bingo_state.pkl"  # 상태 저장 파일명
-ADMIN_PASSWORD = "0966"         # 게임 종료 비밀번호
+try:
+    ADMIN_PASSWORD = st.secrets["admin_password"]
+except FileNotFoundError:
+    # 로컬 테스트용 (secrets.toml이 없을 경우)
+    ADMIN_PASSWORD = "1234"
 
 LEVEL_MAPPING = {
     1: "6..10",
@@ -841,4 +845,5 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         cell = board[r][c]
         with cols[c]:
+
             st.markdown(render_cell_html(cell), unsafe_allow_html=True)
