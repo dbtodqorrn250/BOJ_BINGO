@@ -196,17 +196,48 @@ def fetch_problems_with_filter(level: int, user_filter_query: str):
         return res.json().get("items", []) if res.status_code == 200 else []
     except: return []
 
-# --- [최적화 핵심 로직] ---
+# =========================================================
+# [수정] 프로필 페이지 전용 파싱 로직 (캐싱 방지)
+# =========================================================
+
 def get_user_solved_set(session, user_id: str):
-    """유저 페이지를 긁어 '맞은 문제' 리스트를 집합(Set)으로 반환"""
-    url = f"https://www.acmicpc.net/user/{user_id}"
+    """
+    오직 유저 프로필 페이지(acmicpc.net/user/xxx)에서만
+    '맞은 문제' 목록을 긁어옵니다.
+    """
+    # 1. 캐싱 방지를 위해 URL 뒤에 의미 없는 난수(?t=...)를 붙임
+    url = f"https://www.acmicpc.net/user/{user_id}?t={time.time()}"
+    
+    solved = set()
     try:
-        res = session.get(url, headers=get_headers(), timeout=5)
-        soup = BeautifulSoup(res.text, "html.parser")
-        return {int(span.text.strip()) for span in soup.select(".problem_number")}
+        # 헤더는 봇 차단 방지용
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        res = session.get(url, headers=headers, timeout=5)
+        
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            
+            # [핵심 수정]
+            # .problem_number 클래스 대신, 
+            # <div class="problem-list"> 안에 있는 모든 <a> 태그를 찾습니다.
+            # 백준 프로필에서 첫 번째 .problem-list가 '맞은 문제' 영역입니다.
+            problem_list_div = soup.select_one(".problem-list")
+            
+            if problem_list_div:
+                links = problem_list_div.select("a")
+                for link in links:
+                    txt = link.text.strip()
+                    # 텍스트가 숫자인지 확인하고 추가
+                    if txt.isdigit():
+                        solved.add(int(txt))
+                        
     except Exception as e:
         print(f"Error fetching user {user_id}: {e}")
-        return set()
+        
+    return solved
 
 def get_submission_id_optimized(session, user_id: str, problem_id: int):
     """정밀 검사: 채점 현황판에서 제출 번호를 가져옴"""
@@ -589,3 +620,4 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
+
