@@ -208,81 +208,85 @@ def get_headers():
         "Referer": "https://www.acmicpc.net/",
     }
 
+# =========================================================
+# [수정] 강력한 캐시 무효화 (Cache-Busting) 적용
+# =========================================================
+
 def get_user_solved_set(session, user_id: str):
     """
-    [하이브리드 수집]
-    1. 프로필 페이지: 전체 푼 문제 (업데이트 느림, 대량 데이터)
-    2. 채점 현황판: 최근 푼 문제 (업데이트 즉시, 소량 데이터)
-    => 두 결과를 합쳐서 반환합니다.
+    [하이브리드 + 캐시 무효화]
+    모든 URL에 ?t={시간}을 붙여서 서버/CDN이 저장된 과거 데이터를 주지 못하게 막습니다.
     """
     solved = set()
+    current_time = time.time()
     
     # -----------------------------------------------------
-    # 1. [실시간] 채점 현황판 크롤링 (가장 중요)
+    # 1. [실시간] 채점 현황판 (result_id=4: 맞았습니다)
     # -----------------------------------------------------
-    # result_id=4 (맞았습니다) 필터 적용
-    url_status = f"https://www.acmicpc.net/status?user_id={user_id}&result_id=4"
+    # URL 끝에 &t=... 를 붙여서 매번 새로운 요청인 것처럼 위장
+    url_status = f"https://www.acmicpc.net/status?user_id={user_id}&result_id=4&t={current_time}"
+    
     try:
-        # 캐싱 방지용 헤더 추가
+        # 헤더에도 캐시 금지 요청 추가
         headers = get_headers()
         headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        headers["Pragma"] = "no-cache"
         
         res = session.get(url_status, headers=headers, timeout=5)
         if res.status_code == 200:
-            # 채점 현황판에 있는 문제 번호 링크(/problem/xxxx)를 정규식으로 모두 추출
-            # BeautifulSoup보다 정규식이 빠르고 HTML 구조 변화에 강함
+            # 정규식으로 /problem/숫자 추출
             found_ids = re.findall(r'/problem/(\d+)', res.text)
             for pid in found_ids:
                 solved.add(int(pid))
-        else:
-            print(f"Status check failed for {user_id} (Code: {res.status_code})")
     except Exception as e:
-        print(f"Error fetching status for {user_id}: {e}")
+        print(f"Status check error {user_id}: {e}")
 
     # -----------------------------------------------------
-    # 2. [전체] 프로필 페이지 크롤링
+    # 2. [전체] 프로필 페이지
     # -----------------------------------------------------
-    url_profile = f"https://www.acmicpc.net/user/{user_id}"
+    url_profile = f"https://www.acmicpc.net/user/{user_id}?t={current_time}"
     try:
         res = session.get(url_profile, headers=get_headers(), timeout=5)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
-            
-            # '맞은 문제' 영역 찾기 (.problem-list)
-            # 보통 첫 번째 .problem-list가 맞은 문제임
             problem_list_div = soup.select_one(".problem-list")
-            
             if problem_list_div:
                 links = problem_list_div.select("a")
                 for link in links:
                     txt = link.text.strip()
                     if txt.isdigit():
                         solved.add(int(txt))
-        else:
-            print(f"Profile check failed for {user_id} (Code: {res.status_code})")
     except Exception as e:
-        print(f"Error fetching profile for {user_id}: {e}")
+        print(f"Profile check error {user_id}: {e}")
 
     return solved
-
+    
 def get_submission_id_optimized(session, user_id: str, problem_id: int):
-    """정밀 검사: 채점 현황판에서 제출 번호를 가져옴"""
-    url = f"https://www.acmicpc.net/status?problem_id={problem_id}&user_id={user_id}&result_id=4"
+    """
+    [정밀 검사]
+    여기에도 t=...를 붙여야 합니다. 
+    1차 검사(solved_set)를 통과했더라도, 여기서 과거 데이터를 받으면 '안 푼 것(inf)'으로 처리되기 때문입니다.
+    """
+    # URL에 t 파라미터 추가
+    url = f"https://www.acmicpc.net/status?problem_id={problem_id}&user_id={user_id}&result_id=4&t={time.time()}"
+    
     try:
         res = session.get(url, headers=get_headers(), timeout=5)
         soup = BeautifulSoup(res.text, "html.parser")
         rows = soup.select("tbody tr")
+        
         best = float("inf")
         for row in rows:
             tds = row.find_all("td")
             if tds:
                 try:
-                    best = min(best, int(tds[0].text.strip()))
-                except: pass
+                    # 제출 번호 추출
+                    sid = int(tds[0].text.strip())
+                    best = min(best, sid)
+                except: 
+                    pass
         return best
-    except: return float("inf")
-
+    except: 
+        return float("inf")
 # =========================================================
 # 4) 게임 로직
 # =========================================================
@@ -647,5 +651,6 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
+
 
 
