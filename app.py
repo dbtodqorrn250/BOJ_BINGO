@@ -176,26 +176,112 @@ def fetch_problems_with_filter(level: int, user_filter_query: str):
     except: return []
 
 # =========================================================
-# [핵심] Solved.ac API로 풀이 여부 확인
+# [최적화] Solved.ac API 대량 조회 (Batch Query)
 # =========================================================
 
-def check_solved_via_api(session, user_id: str, problem_id: int):
+def fetch_user_solved_in_bulk(session, user_id, problem_ids):
     """
-    Solved.ac Search API를 사용하여 특정 유저가 문제를 풀었는지 확인합니다.
-    Query: 's@{user_id} id:{problem_id}'
-    결과 개수가 1개 이상이면 푼 것.
+    한 번의 API 호출로 유저가 특정 문제 목록 중 무엇을 풀었는지 확인합니다.
+    Query: "s@user_id (id:1000|id:1001|...)"
     """
-    query = f"s@{user_id} id:{problem_id}"
-    params = {"query": query}
+    if not problem_ids:
+        return set()
+    
+    # 쿼리 생성: s@아이디 (id:1|id:2|...)
+    # OR 연산자(|)를 사용하여 빙고판에 있는 문제들 중 하나라도 풀었는지 검색
+    ids_query = "|".join([f"id:{pid}" for pid in problem_ids])
+    query = f"s@{user_id} ({ids_query})"
+    
+    params = {"query": query, "page": 1}
+    
     try:
-        # solved.ac API는 차단 확률이 매우 낮으므로 안전합니다.
-        res = session.get(SOLVED_SEARCH, params=params, headers=get_headers(), timeout=3)
+        res = session.get(SOLVED_SEARCH, params=params, headers=get_headers(), timeout=5)
         if res.status_code == 200:
             data = res.json()
-            return data.get("count", 0) > 0
-    except:
-        pass
-    return False
+            # 검색 결과에 나온 문제들은 '푼 문제'임
+            solved_ids = {item['problemId'] for item in data.get("items", [])}
+            return solved_ids
+    except Exception as e:
+        print(f"Batch fetch failed for {user_id}: {e}")
+    
+    return set()
+
+def scan_all_cells_parallel():
+    board = st.session_state.board
+    participants = st.session_state.participants
+    
+    # 1. 현재 빙고판에 있는 모든 문제 번호 수집
+    active_pids = []
+    pid_to_pos = {} # pid -> [(r, c), ...] (중복 문제 대비)
+    
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            pid = board[r][c]["info"]["problemId"]
+            if pid > 0:
+                active_pids.append(pid)
+                if pid not in pid_to_pos:
+                    pid_to_pos[pid] = []
+                pid_to_pos[pid].append((r, c))
+    
+    # 중복 제거 (쿼리 최적화)
+    unique_pids = list(set(active_pids))
+    
+    # 결과 저장소
+    # user_solved_status = { 'user1': {1000, 1001}, 'user2': {1001, 1002} }
+    user_solved_status = {}
+
+    # 2. 유저별로 한 번씩만 API 호출 (병렬 처리)
+    with requests.Session() as session:
+        session.headers.update(get_headers())
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            # 유저별로 "빙고판 문제 중 푼 것"을 가져오는 태스크 생성
+            future_to_user = {
+                executor.submit(fetch_user_solved_in_bulk, session, u, unique_pids): u 
+                for u in participants.keys()
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_user):
+                user = future_to_user[future]
+                try:
+                    user_solved_status[user] = future.result()
+                except:
+                    user_solved_status[user] = set()
+
+    # 3. 데이터 매핑 및 보드 업데이트
+    changes = 0
+    
+    # 모든 문제를 순회하며 푼 사람 찾기
+    for pid in unique_pids:
+        # 이 문제를 푼 유저 리스트 확인
+        solved_users = []
+        for u, solved_set in user_solved_status.items():
+            if pid in solved_set:
+                solved_users.append(u)
+        
+        if solved_users:
+            # 누군가 풀었다면 해당 문제의 좌표들을 찾음
+            for r, c in pid_to_pos[pid]:
+                cell = board[r][c]
+                
+                # 아직 주인이 없거나, 다른 팀이 뺏는 경우 등을 처리
+                # (여기서는 가장 먼저 발견된 사람을 승자로 처리 - API 특성상 시간차 구분은 어려움)
+                
+                # 이미 우리 팀이 점령했으면 패스 (중복 업데이트 방지)
+                # 단, capturer 정보 갱신을 원하면 로직 수정 가능
+                winner_id = solved_users[0] # 여러 명이면 랜덤/첫번째
+                winner_team = participants[winner_id]
+                
+                if cell["owner"] != winner_team:
+                    update_cell_after_win(cell, winner_team, winner_id)
+                    changes += 1
+
+    if changes > 0:
+        st.toast(f"{changes}개의 타일이 점령되었습니다!", icon="🎉")
+        time.sleep(1)
+        st.rerun()
+    else:
+        st.toast("변동 사항이 없습니다.", icon="💤")
 
 # =========================================================
 # 4) 게임 로직
@@ -280,65 +366,6 @@ def update_cell_after_win(cell, winner_team, winner_id):
     st.session_state.used_problem_ids.add(picked["problemId"])
     add_log(f"{winner_team} 점령! #{old_pid} (by {winner_id})")
     save_state()
-
-def check_cell_api_worker(r, c, cell_info, participants, session):
-    pid = cell_info["problemId"]
-    if pid == 0: return (r, c, None, None)
-
-    # 1. 이 문제를 푼 사람이 있는지 API로 확인
-    # Solved.ac API는 ID 필터링이 정확하므로 매우 신뢰할 수 있음
-    solved_users = []
-    for user_id in participants.keys():
-        if check_solved_via_api(session, user_id, pid):
-            solved_users.append(user_id)
-    
-    if not solved_users:
-        return (r, c, None, None)
-
-    # 2. 누가 먼저 풀었는지(제출 시간)는 Solved.ac Search API로 알기 어려움
-    # 따라서, 발견된 사람 중 랜덤(또는 첫 번째)으로 점령 인정
-    # (백준이 차단된 상황에서의 최선책)
-    winner_id = solved_users[0] 
-    winner_team = participants[winner_id]
-
-    return (r, c, winner_team, winner_id)
-
-def scan_all_cells_parallel():
-    board = st.session_state.board
-    participants = st.session_state.participants
-    
-    # 세션 하나로 재사용
-    with requests.Session() as session:
-        session.headers.update(get_headers())
-        
-        tasks = []
-        # 병렬 처리로 속도 향상 (API 호출이 많으므로)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-            for r in range(GRID_SIZE):
-                for c in range(GRID_SIZE):
-                    cell = board[r][c]
-                    # 이미 주인이 있더라도 뺏기는 로직이 있다면 계속 검사해야 함
-                    # 현재는 주인 바뀌는 것만 체크
-                    tasks.append(
-                        executor.submit(check_cell_api_worker, r, c, cell['info'], participants, session)
-                    )
-        
-        results = [f.result() for f in concurrent.futures.as_completed(tasks)]
-    
-    changes = 0
-    for r, c, w_team, w_id in results:
-        if w_team:
-            cell = board[r][c]
-            if cell["owner"] != w_team:
-                update_cell_after_win(cell, w_team, w_id)
-                changes += 1
-    
-    if changes > 0:
-        st.toast(f"{changes}개의 타일이 점령되었습니다!", icon="🎉")
-        time.sleep(1)
-        st.rerun()
-    else:
-        st.toast("변동 사항이 없습니다. (Solved.ac 갱신 필요)", icon="💤")
 
 def check_winner():
     board = st.session_state.board
@@ -540,3 +567,4 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
+
