@@ -317,8 +317,7 @@ def scan_all_cells_parallel():
             for r in range(GRID_SIZE):
                 for c in range(GRID_SIZE):
                     cell = board[r][c]
-                    # 이미 주인이 있더라도 뺏기는 로직이 있다면 계속 검사해야 함
-                    # 현재는 주인 바뀌는 것만 체크
+                    # 현재 타일의 문제를 푼 사람이 있는지 확인
                     tasks.append(
                         executor.submit(check_cell_api_worker, r, c, cell['info'], participants, session)
                     )
@@ -329,12 +328,14 @@ def scan_all_cells_parallel():
     for r, c, w_team, w_id in results:
         if w_team:
             cell = board[r][c]
-            if cell["owner"] != w_team:
-                update_cell_after_win(cell, w_team, w_id)
-                changes += 1
+            
+            # [수정됨] 기존에는 주인이 다를 때만(if cell["owner"] != w_team:) 업데이트했으나,
+            # 이제는 누가 풀든(같은 팀이 풀어도) 업데이트를 진행하여 레벨업/방어를 허용함.
+            update_cell_after_win(cell, w_team, w_id)
+            changes += 1
     
     if changes > 0:
-        st.toast(f"{changes}개의 타일이 점령되었습니다!", icon="🎉")
+        st.toast(f"{changes}개의 타일이 업데이트되었습니다!", icon="🎉")
         time.sleep(1)
         st.rerun()
     else:
@@ -540,3 +541,4 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
+
