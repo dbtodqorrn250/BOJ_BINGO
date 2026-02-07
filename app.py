@@ -307,32 +307,58 @@ def scan_all_cells_parallel():
     board = st.session_state.board
     participants = st.session_state.participants
     
-    # 세션 하나로 재사용
+    tasks = []
+    
+    # 세션 재사용
     with requests.Session() as session:
         session.headers.update(get_headers())
         
-        tasks = []
-        # 병렬 처리로 속도 향상 (API 호출이 많으므로)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        # [최적화] ThreadPool을 사용해 동시에 조회
+        with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
             for r in range(GRID_SIZE):
                 for c in range(GRID_SIZE):
                     cell = board[r][c]
-                    # 이미 주인이 있더라도 뺏기는 로직이 있다면 계속 검사해야 함
-                    # 현재는 주인 바뀌는 것만 체크
-                    tasks.append(
-                        executor.submit(check_cell_api_worker, r, c, cell['info'], participants, session)
-                    )
+                    pid = cell["info"]["problemId"]
+                    if pid == 0: continue
+                    
+                    # 모든 참가자에 대해 검사
+                    for user_id in participants.keys():
+                        tasks.append(
+                            executor.submit(check_single_solved, session, user_id, pid)
+                        )
         
+        # 결과 수집
         results = [f.result() for f in concurrent.futures.as_completed(tasks)]
     
+    # 결과 처리
+    # pid -> solved_users 리스트
+    solved_map = {} 
+    for user_id, pid, is_solved in results:
+        if is_solved:
+            if pid not in solved_map: solved_map[pid] = []
+            solved_map[pid].append(user_id)
+            
     changes = 0
-    for r, c, w_team, w_id in results:
-        if w_team:
+    # 보드 업데이트
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
             cell = board[r][c]
-            if cell["owner"] != w_team:
-                update_cell_after_win(cell, w_team, w_id)
+            pid = cell["info"]["problemId"]
+            
+            if pid in solved_map:
+                # 문제를 푼 사람이 확인됨
+                winners = solved_map[pid]
+                
+                # API로는 초 단위 선착순 판별이 어려우므로, 리스트 첫 번째를 승자로 간주
+                winner_id = winners[0]
+                winner_team = participants[winner_id]
+                
+                # [수정 핵심] 주인이 같아도(우리 팀이 풀어도) 업데이트 진행!
+                # (조건문 if cell["owner"] != winner_team: 삭제함)
+                
+                update_cell_after_win(cell, winner_team, winner_id)
                 changes += 1
-    
+
     if changes > 0:
         st.toast(f"{changes}개의 타일이 점령되었습니다!", icon="🎉")
         time.sleep(1)
@@ -540,3 +566,4 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
+
