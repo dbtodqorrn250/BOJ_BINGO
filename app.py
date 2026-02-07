@@ -1,12 +1,10 @@
 import streamlit as st
 import requests
-import re
 import random
 import time
 import concurrent.futures
 import json
 import gspread
-from bs4 import BeautifulSoup
 from google.oauth2.service_account import Credentials
 
 # =========================================================
@@ -14,13 +12,13 @@ from google.oauth2.service_account import Credentials
 # =========================================================
 st.set_page_config(
     layout="wide",
-    page_title="BAEKJOON BINGO : SPEED",
+    page_title="BAEKJOON BINGO : SOLVED.AC",
     initial_sidebar_state="expanded"
 )
 
 GRID_SIZE = 5
 MAX_LEVEL = 5
-SHEET_NAME = "BingoData"  # 구글 시트 이름
+SHEET_NAME = "BingoData"
 
 try:
     ADMIN_PASSWORD = st.secrets["admin_password"]
@@ -41,35 +39,22 @@ SOLVED_USER_SHOW = "https://solved.ac/api/v3/user/show"
 def get_headers():
     return {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+        "Accept": "application/json"
     }
 
 # =========================================================
-# 1) UI (CSS 스타일)
+# 1) UI 스타일
 # =========================================================
 st.markdown("""
 <style>
 div[data-testid="stStatusWidget"] { visibility: hidden; height: 0%; position: fixed; }
-[data-testid="stSidebarCollapsedControl"] {
-    display: block !important; color: white !important;
-    background-color: rgba(255, 255, 255, 0.1); border-radius: 5px; z-index: 999999 !important;
-}
+[data-testid="stSidebarCollapsedControl"] { display: block !important; color: white !important; background-color: rgba(255, 255, 255, 0.1); border-radius: 5px; z-index: 999999 !important; }
 header[data-testid="stHeader"] { background: transparent !important; pointer-events: none; }
 header[data-testid="stHeader"] > div { pointer-events: auto; }
 .block-container { padding-top: 3rem !important; padding-bottom: 2rem !important; }
 
-:root{
-  --bg:#0b1220; --panel:#101a2f; --card:#0f1a30; --border:rgba(255,255,255,.09);
-  --text:#eaf1ff; --muted:#b9c5e6; --muted2:#8ea0c9;
-  --red1:#ff4d6d; --red2:#c9184a; --blue1:#4dabf7; --blue2:#1864ab;
-  --shadow: 0 14px 35px rgba(0,0,0,.35);
-}
-.stApp{
-  background: radial-gradient(1200px 600px at 30% 10%, rgba(77,171,247,.15), transparent 55%),
-              radial-gradient(900px 600px at 80% 30%, rgba(255,77,109,.12), transparent 55%),
-              var(--bg);
-  color: var(--text); font-family: 'Pretendard','Apple SD Gothic Neo',sans-serif;
-}
+:root{ --bg:#0b1220; --panel:#101a2f; --card:#0f1a30; --border:rgba(255,255,255,.09); --text:#eaf1ff; --muted:#b9c5e6; --muted2:#8ea0c9; --red1:#ff4d6d; --red2:#c9184a; --blue1:#4dabf7; --blue2:#1864ab; --shadow: 0 14px 35px rgba(0,0,0,.35); }
+.stApp{ background: radial-gradient(1200px 600px at 30% 10%, rgba(77,171,247,.15), transparent 55%), radial-gradient(900px 600px at 80% 30%, rgba(255,77,109,.12), transparent 55%), var(--bg); color: var(--text); font-family: 'Pretendard',sans-serif; }
 h1,h2,h3,h4 { color: var(--text) !important; }
 section[data-testid="stSidebar"]{ background: linear-gradient(180deg, rgba(16,26,47,.95), rgba(10,16,30,.95)); border-right: 1px solid var(--border); }
 hr { border-color: rgba(255,255,255,.08) !important; }
@@ -77,13 +62,8 @@ hr { border-color: rgba(255,255,255,.08) !important; }
 a.problem-link{ text-decoration:none; color: var(--muted); font-size: .78rem; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,.03); display: inline-block; }
 a.problem-link:hover{ color: var(--text); border-color: rgba(255,255,255,.2); }
 
-.bingo-card{
-  position: relative; background: rgba(255,255,255,.03); border: 1px solid var(--border);
-  border-radius: 22px; padding: 14px 14px 12px 14px; min-height: 168px;
-  box-shadow: var(--shadow); overflow: hidden; transition: transform 0.2s ease;
-}
+.bingo-card{ position: relative; background: rgba(255,255,255,.03); border: 1px solid var(--border); border-radius: 22px; padding: 14px; min-height: 168px; box-shadow: var(--shadow); overflow: hidden; transition: transform 0.2s ease; }
 .bingo-card:hover{ border-color: rgba(255,255,255,.18); transform: translateY(-2px); }
-
 .badge{ font-size: .72rem; padding: 6px 12px; border-radius: 999px; font-weight: 900; letter-spacing: .2px; border: 1px solid rgba(255,255,255,.10); }
 .lv-dots{ font-size: .85rem; color: var(--muted2); letter-spacing: 1px; }
 .pid{ font-size: 1.75rem; font-weight: 1000; letter-spacing: -0.8px; margin-top: 8px; }
@@ -91,7 +71,6 @@ a.problem-link:hover{ color: var(--text); border-color: rgba(255,255,255,.2); }
 .card-bottom{ margin-top: 12px; display:flex; justify-content:space-between; align-items:center; }
 .red-glow{ box-shadow: 0 0 0 1px rgba(255,77,109,.25), 0 18px 40px rgba(255,77,109,.08); }
 .blue-glow{ box-shadow: 0 0 0 1px rgba(77,171,247,.25), 0 18px 40px rgba(77,171,247,.08); }
-
 .team-panel{ background: rgba(255,255,255,.03); border: 1px solid var(--border); border-radius: 22px; padding: 16px; box-shadow: var(--shadow); }
 .team-title{ font-size: 1.1rem; font-weight: 1000; letter-spacing: -.4px; margin-bottom: 12px; }
 .player-card{ display:flex; justify-content:space-between; align-items:center; gap: 12px; padding: 12px 14px; border-radius: 18px; border: 1px solid rgba(255,255,255,.08); background: rgba(255,255,255,.02); margin-bottom: 10px; }
@@ -105,7 +84,7 @@ a.problem-link:hover{ color: var(--text); border-color: rgba(255,255,255,.2); }
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 2) 데이터 저장/불러오기 (Google Sheets)
+# 2) 데이터 저장/불러오기
 # =========================================================
 def get_google_sheet_connection():
     try:
@@ -147,7 +126,6 @@ def load_state():
         if "used_problem_ids" in data:
             st.session_state.used_problem_ids = set(data["used_problem_ids"])
         
-        # 호환성: capturer 필드 추가
         if "board" in st.session_state:
             board = st.session_state.board
             for r in range(len(board)):
@@ -168,7 +146,7 @@ def clear_state():
         del st.session_state[k]
 
 # =========================================================
-# 3) Solved.ac & Crawling (최적화 적용됨)
+# 3) Solved.ac API
 # =========================================================
 TIER_NAMES = ["Unrated"] + [f"{r} {5-i}" for r in ["Bronze","Silver","Gold","Platinum","Diamond","Ruby"] for i in range(5)]
 def tier_to_name(tier: int):
@@ -198,104 +176,26 @@ def fetch_problems_with_filter(level: int, user_filter_query: str):
     except: return []
 
 # =========================================================
-# [수정] 실시간 반영을 위한 하이브리드 크롤링
+# [핵심] Solved.ac API로 풀이 여부 확인
 # =========================================================
 
-def get_headers():
-    return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
-        "Referer": "https://www.acmicpc.net/",
-    }
-
-# =========================================================
-# [수정] 정규식(Regex) 기반의 강력한 파싱 로직
-# =========================================================
-
-def get_user_solved_set(session, user_id: str):
+def check_solved_via_api(session, user_id: str, problem_id: int):
     """
-    [하이브리드 + 정규식]
-    HTML 태그 구조(table/tr/td)를 분석하지 않고,
-    텍스트 패턴(href="/problem/xxx")을 직접 찾아서 속도와 정확도를 높입니다.
+    Solved.ac Search API를 사용하여 특정 유저가 문제를 풀었는지 확인합니다.
+    Query: 's@{user_id} id:{problem_id}'
+    결과 개수가 1개 이상이면 푼 것.
     """
-    solved = set()
-    current_time = time.time()
-    headers = get_headers()
-    headers["Cache-Control"] = "no-cache"
-
-    # 1. [실시간] 채점 현황판 (result_id=4)
-    # -----------------------------------------------------
-    url_status = f"https://www.acmicpc.net/status?user_id={user_id}&result_id=4&t={current_time}"
+    query = f"s@{user_id} id:{problem_id}"
+    params = {"query": query}
     try:
-        res = session.get(url_status, headers=headers, timeout=5)
+        # solved.ac API는 차단 확률이 매우 낮으므로 안전합니다.
+        res = session.get(SOLVED_SEARCH, params=params, headers=get_headers(), timeout=3)
         if res.status_code == 200:
-            # HTML에서 href="/problem/1000" 형태의 문자열을 모두 찾음
-            # 이 페이지는 '맞았습니다' 필터가 걸려있으므로, 발견된 모든 문제 번호는 푼 문제임.
-            found_ids = re.findall(r'href="/problem/(\d+)"', res.text)
-            for pid in found_ids:
-                solved.add(int(pid))
-    except Exception as e:
-        print(f"Status check error {user_id}: {e}")
-
-    # 2. [전체] 프로필 페이지
-    # -----------------------------------------------------
-    url_profile = f"https://www.acmicpc.net/user/{user_id}?t={current_time}"
-    try:
-        res = session.get(url_profile, headers=headers, timeout=5)
-        if res.status_code == 200:
-            # 프로필 페이지의 '맞은 문제' 영역은 구조가 복잡할 수 있으니 
-            # 단순히 숫자로 된 링크 텍스트보다는, 문제 번호 패턴을 찾는게 안전할 수 있으나
-            # 프로필 페이지는 푼 문제가 너무 많아서 정규식 오탐지가 날 수 있음.
-            # 따라서 여기는 BeautifulSoup 유지하되 안전장치 강화
-            soup = BeautifulSoup(res.text, "html.parser")
-            problem_list_div = soup.select_one(".problem-list")
-            if problem_list_div:
-                # div 안에 있는 링크의 텍스트가 숫자인 경우만 추출
-                for link in problem_list_div.find_all("a"):
-                    txt = link.text.strip()
-                    if txt.isdigit():
-                        solved.add(int(txt))
-    except Exception as e:
-        print(f"Profile check error {user_id}: {e}")
-
-    return solved
-
-def get_submission_id_optimized(session, user_id: str, problem_id: int):
-    """
-    [정밀 검사 - 정규식 버전]
-    BeautifulSoup으로 tr/td 찾는 방식이 실패할 경우를 대비해
-    HTML 소스에서 'solution-12345678' 패턴(제출 번호 ID)을 직접 찾습니다.
-    """
-    url = f"https://www.acmicpc.net/status?problem_id={problem_id}&user_id={user_id}&result_id=4&t={time.time()}"
-    
-    try:
-        res = session.get(url, headers=get_headers(), timeout=5)
-        if res.status_code != 200:
-            return float("inf")
-
-        # 방법 A: 정규식으로 'solution-숫자' ID 찾기 (백준의 tr id="solution-123456" 패턴)
-        # 이 패턴은 채점 현황 테이블의 각 행(row)에 무조건 존재합니다.
-        solution_ids = re.findall(r'id="solution-(\d+)"', res.text)
-        
-        if solution_ids:
-            # 찾은 ID 중 가장 작은 값(가장 먼저 푼 것) 반환
-            return min(map(int, solution_ids))
-        
-        # 방법 B: 정규식 실패 시(혹시나 해서), 기존 BeautifulSoup 방식 시도 (Fallback)
-        soup = BeautifulSoup(res.text, "html.parser")
-        rows = soup.select("tbody tr")
-        best = float("inf")
-        for row in rows:
-            tds = row.find_all("td")
-            if tds:
-                try:
-                    sid = int(tds[0].text.strip())
-                    best = min(best, sid)
-                except: pass
-        return best
-
-    except: 
-        return float("inf")
+            data = res.json()
+            return data.get("count", 0) > 0
+    except:
+        pass
+    return False
 
 # =========================================================
 # 4) 게임 로직
@@ -324,21 +224,18 @@ def init_game():
 
     filter_query = " ".join([f"-s@{u}" for u in participants.keys()]).strip()
     
-    # 문제 뽑기
     pool = []
     for _ in range(GRID_SIZE * GRID_SIZE):
-        # 레벨 1 문제로 초기화
         items = fetch_problems_with_filter(1, filter_query)
         if not items: items = fetch_problems_with_filter(1, "")
         
-        # 중복 방지 로직 (간단 구현)
         candidate = None
         for _ in range(5):
             c = random.choice(items) if items else {"problemId": 0, "titleKo": "문제 부족", "level": 0}
             if c["problemId"] not in st.session_state.used_problem_ids:
                 candidate = c
                 break
-        if not candidate: candidate = items[0]
+        if not candidate: candidate = items[0] if items else {"problemId":0, "titleKo":"Error", "level":0}
         
         pool.append(candidate)
         st.session_state.used_problem_ids.add(candidate["problemId"])
@@ -366,16 +263,13 @@ def update_cell_after_win(cell, winner_team, winner_id):
     cell["owner"] = winner_team
     cell["capturer"] = winner_id
     
-    # 레벨업
     next_lv = min(cell["level"] + 1, MAX_LEVEL)
     
-    # 새 문제 찾기
     filter_q = " ".join([f"-s@{u}" for u in participants.keys()]).strip()
     new_items = fetch_problems_with_filter(next_lv, filter_q)
     if not new_items: new_items = fetch_problems_with_filter(next_lv, "")
     
     picked = random.choice(new_items) if new_items else cell["info"]
-    # 중복 회피 시도
     for _ in range(5):
         if picked["problemId"] not in st.session_state.used_problem_ids:
             break
@@ -387,52 +281,46 @@ def update_cell_after_win(cell, winner_team, winner_id):
     add_log(f"{winner_team} 점령! #{old_pid} (by {winner_id})")
     save_state()
 
-def check_cell_worker_optimized(r, c, cell_info, participants, solved_maps, session):
+def check_cell_api_worker(r, c, cell_info, participants, session):
     pid = cell_info["problemId"]
+    if pid == 0: return (r, c, None, None)
+
+    # 1. 이 문제를 푼 사람이 있는지 API로 확인
+    # Solved.ac API는 ID 필터링이 정확하므로 매우 신뢰할 수 있음
+    solved_users = []
+    for user_id in participants.keys():
+        if check_solved_via_api(session, user_id, pid):
+            solved_users.append(user_id)
     
-    # 1. 푼 사람이 있는지 메모리에서 확인 (매우 빠름)
-    candidates = [u for u in participants.keys() if pid in solved_maps.get(u, set())]
-    if not candidates:
+    if not solved_users:
         return (r, c, None, None)
 
-    # 2. 푼 사람이 있다면, '누가 가장 빨리 풀었나' 정밀 검사 (API 호출)
-    min_sub_id = float("inf")
-    winner_team = None
-    winner_id = None
-
-    for user_id in candidates:
-        team = participants[user_id]
-        sub_id = get_submission_id_optimized(session, user_id, pid)
-        if sub_id != float("inf") and sub_id < min_sub_id:
-            min_sub_id = sub_id
-            winner_team = team
-            winner_id = user_id
+    # 2. 누가 먼저 풀었는지(제출 시간)는 Solved.ac Search API로 알기 어려움
+    # 따라서, 발견된 사람 중 랜덤(또는 첫 번째)으로 점령 인정
+    # (백준이 차단된 상황에서의 최선책)
+    winner_id = solved_users[0] 
+    winner_team = participants[winner_id]
 
     return (r, c, winner_team, winner_id)
 
 def scan_all_cells_parallel():
     board = st.session_state.board
     participants = st.session_state.participants
-    solved_maps = {}
     
-    # [최적화] 세션 하나로 모든 요청 처리
+    # 세션 하나로 재사용
     with requests.Session() as session:
         session.headers.update(get_headers())
         
-        # 1. 모든 참가자의 '푼 문제 목록' 한 번씩 긁어오기 (유저 수 N만큼 요청)
-        for u in participants.keys():
-            solved_maps[u] = get_user_solved_set(session, u)
-        
-        # 2. 각 셀 검사 (병렬 처리)
         tasks = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        # 병렬 처리로 속도 향상 (API 호출이 많으므로)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
             for r in range(GRID_SIZE):
                 for c in range(GRID_SIZE):
                     cell = board[r][c]
-                    # 이미 점령된 땅이어도 '스틸' 가능성이 있으므로 검사 (단, 주인 바뀔때만)
+                    # 이미 주인이 있더라도 뺏기는 로직이 있다면 계속 검사해야 함
+                    # 현재는 주인 바뀌는 것만 체크
                     tasks.append(
-                        executor.submit(check_cell_worker_optimized, 
-                                        r, c, cell['info'], participants, solved_maps, session)
+                        executor.submit(check_cell_api_worker, r, c, cell['info'], participants, session)
                     )
         
         results = [f.result() for f in concurrent.futures.as_completed(tasks)]
@@ -441,28 +329,23 @@ def scan_all_cells_parallel():
     for r, c, w_team, w_id in results:
         if w_team:
             cell = board[r][c]
-            # 새 주인이 나타났고, 기존 주인이 아니거나, 아직 주인이 없을 때
             if cell["owner"] != w_team:
                 update_cell_after_win(cell, w_team, w_id)
                 changes += 1
-            # 같은 팀이지만 다른 사람이 더 빨리 푼 기록이 발견된 경우는 
-            # 굳이 업데이트 안 해도 됨 (단순화)
     
     if changes > 0:
         st.toast(f"{changes}개의 타일이 점령되었습니다!", icon="🎉")
-        time.sleep(1) # UI 갱신 대기
+        time.sleep(1)
         st.rerun()
     else:
-        st.toast("변동 사항이 없습니다.", icon="💤")
+        st.toast("변동 사항이 없습니다. (Solved.ac 갱신 필요)", icon="💤")
 
 def check_winner():
     board = st.session_state.board
     lines = []
-    # 가로, 세로
     for i in range(GRID_SIZE):
         lines.append([(i, c) for c in range(GRID_SIZE)])
         lines.append([(r, i) for r in range(GRID_SIZE)])
-    # 대각선
     lines.append([(i, i) for i in range(GRID_SIZE)])
     lines.append([(i, GRID_SIZE - 1 - i) for i in range(GRID_SIZE)])
 
@@ -554,17 +437,15 @@ init_state()
 st.markdown("""
 <div style="margin-bottom: 20px;">
   <div style="font-size: .95rem; color: var(--muted2); font-weight: 800; letter-spacing: .5px;">⚔️ BAEKJOON</div>
-  <div style="font-size: 2.4rem; font-weight: 1000; letter-spacing: -1px;">BINGO ARENA <span style="font-size:1rem; color:#4dabf7;">SPEED</span></div>
+  <div style="font-size: 2.4rem; font-weight: 1000; letter-spacing: -1px;">BINGO ARENA <span style="font-size:1rem; color:#22b8cf;">SOLVED.AC</span></div>
 </div>
 """, unsafe_allow_html=True)
 
-# 사이드바
 with st.sidebar:
     st.markdown("## 🎮 Game Control")
     st.markdown("---")
     
     if not st.session_state.game_started:
-        # 팀 설정
         st.markdown("### 🔴 RED TEAM")
         r_in = st.text_input("RED 추가", key="r_in")
         if st.button("➕ RED 추가", use_container_width=True):
@@ -597,12 +478,14 @@ with st.sidebar:
             init_game()
             st.rerun()
     else:
-        st.success("🟢 게임 진행 중")
+        st.success("🟢 게임 진행 중 (Solved.ac API)")
         st.markdown("### ⚡ Action")
         if st.button("🔄 업데이트", type="primary", use_container_width=True):
-            with st.spinner("채점 현황 분석 중... (최적화 모드)"):
+            with st.spinner("Solved.ac 데이터 확인 중..."):
                 scan_all_cells_parallel()
         
+        st.info("💡 업데이트가 안 되면 solved.ac 사이트에서 '프로필 갱신' 버튼을 눌러주세요.")
+
         st.markdown("---")
         st.markdown("### 📜 Logs")
         for x in st.session_state.logs: st.write("• "+x)
@@ -620,7 +503,6 @@ if not st.session_state.game_started:
     st.info("👈 왼쪽 사이드바에서 플레이어를 등록하고 게임을 시작하세요!")
     st.stop()
 
-# 점수판
 r_score, b_score = check_winner()
 c1, c2, c3 = st.columns(3)
 c1.markdown(f"""<div style="background:rgba(255,77,109,.1); border:1px solid rgba(255,77,109,.3); border-radius:18px; padding:15px; text-align:center;">
@@ -634,14 +516,12 @@ c3.markdown(f"""<div style="background:rgba(77,171,247,.1); border:1px solid rgb
 
 st.write("")
 
-# 승리
 if r_score >= 3 or b_score >= 3:
     win = "RED" if r_score >= 3 else "BLUE"
     bg = "linear-gradient(90deg,var(--red1),var(--red2))" if win=="RED" else "linear-gradient(90deg,var(--blue1),var(--blue2))"
     st.balloons()
     st.markdown(f"""<div style="background:{bg}; padding:20px; border-radius:20px; text-align:center; font-size:1.8rem; font-weight:1000; box-shadow:0 10px 30px rgba(0,0,0,.5);">🏆 {win} WIN! 🏆</div>""", unsafe_allow_html=True)
 
-# 팀 패널
 cap_cnt = {}
 for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
@@ -654,14 +534,9 @@ tc2.markdown(render_team_panel_html("BLUE", st.session_state.blue_users, cap_cnt
 
 st.write("")
 
-# 빙고판
 board = st.session_state.board
 for r in range(GRID_SIZE):
     cols = st.columns(GRID_SIZE, gap="small")
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
-
-
-
-
