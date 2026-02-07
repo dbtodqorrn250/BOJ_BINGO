@@ -185,54 +185,96 @@ def fetch_problems_with_filter(level: int, user_filter_query: str):
         return []
 
 # =========================================================
-# [핵심] 제출번호 확인 (BOJ 직접 크롤링)
+# [수정됨] 크롤링 + API 하이브리드 방식
 # =========================================================
 def fetch_submission_info(submission_id: int):
     """
-    백준(acmicpc.net)의 현황 페이지를 직접 크롤링하여
-    solved.ac API 갱신 지연 없이 즉시 결과를 확인합니다.
+    1차 시도: BOJ 직접 크롤링 (실시간, 빠름)
+    2차 시도: 실패 시 Solved.ac API (안전함, 약간의 갱신 지연 있음)
     """
-    url = f"https://www.acmicpc.net/status?solution_id={submission_id}"
     
+    # --- 1. BOJ 크롤링 시도 ---
     try:
-        # BOJ는 봇 방지를 위해 User-Agent 헤더가 필수입니다.
-        res = requests.get(url, headers=get_headers(), timeout=5)
-        if res.status_code != 200:
-            return None
-        
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        # id가 solution-{submission_id} 인 tr 태그를 찾습니다.
-        row = soup.find("tr", id=f"solution-{submission_id}")
-        if not row:
-            return None
-            
-        # 데이터 파싱
-        # 1. 아이디 (User)
-        user_link = row.find("td", class_="user").find("a")
-        handle = user_link.text.strip() if user_link else None
-        
-        # 2. 문제번호 (Problem ID)
-        problem_link = row.find("td", class_="problem").find("a")
-        pid = int(problem_link.text.strip()) if problem_link else None
-        
-        # 3. 결과 (Result) - "맞았습니다!!" 등을 확인
-        # td.result > span.result-text 구조
-        result_td = row.find("td", class_="result")
-        result_span = result_td.find("span", class_="result-text") if result_td else None
-        result_text = result_span.text.strip() if result_span else ""
-
-        # 결과 매핑: "맞았습니다!!" -> "AC"
-        final_result = "AC" if result_text == "맞았습니다!!" else result_text
-
-        return {
-            "problemId": pid,
-            "handle": handle,
-            "result": final_result
+        url = f"https://www.acmicpc.net/status?solution_id={submission_id}"
+        # 헤더를 실제 브라우저와 최대한 유사하게 설정
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://www.acmicpc.net/",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1"
         }
+        
+        res = requests.get(url, headers=headers, timeout=3)
+        
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            row = soup.find("tr", id=f"solution-{submission_id}")
+            
+            if row:
+                # 1. 아이디
+                user_link = row.find("td", class_="user").find("a")
+                handle = user_link.text.strip() if user_link else None
+                
+                # 2. 문제번호
+                problem_link = row.find("td", class_="problem").find("a")
+                pid = int(problem_link.text.strip()) if problem_link else None
+                
+                # 3. 결과 텍스트 추출
+                result_td = row.find("td", class_="result")
+                result_text = result_td.get_text(strip=True) if result_td else ""
+
+                # "맞았습니다!!" -> "AC" 변환
+                final_result = "AC" if "맞았습니다" in result_text else result_text
+                
+                print(f"[BOJ Crawl] Success: {handle} / {pid} / {final_result}")
+                return {
+                    "problemId": pid,
+                    "handle": handle,
+                    "result": final_result
+                }
+        else:
+            print(f"[BOJ Crawl] Blocked or Failed: Status {res.status_code}")
+            
     except Exception as e:
-        print(f"BOJ Crawling Error: {e}")
-        return None
+        print(f"[BOJ Crawl] Error: {e}")
+
+    # --- 2. 실패 시 Solved.ac API 폴백 (Fallback) ---
+    try:
+        print(f"[System] Fallback to Solved.ac API for #{submission_id}...")
+        res = requests.get(
+            "https://solved.ac/api/v3/submission/show",
+            params={"submissionId": submission_id},
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            timeout=5
+        )
+        
+        if res.status_code == 200:
+            data = res.json()
+            # solved.ac 응답에서 정보 추출
+            if data:
+                pid = data.get("problem", {}).get("problemId")
+                handle = data.get("user", {}).get("handle")
+                result = data.get("result") # solved.ac는 보통 'ac', 'wa' 등을 반환할 수 있음
+                
+                # 결과값 대소문자 처리 ('ac' -> 'AC')
+                final_result = "AC" if result and result.upper() == "AC" else result
+                
+                return {
+                    "problemId": pid,
+                    "handle": handle,
+                    "result": final_result
+                }
+    except Exception as e:
+        print(f"[Solved.ac API] Error: {e}")
+
+    # 둘 다 실패한 경우
+    return None
 
 # =========================================================
 # 4) 게임 로직
@@ -614,3 +656,4 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
+
