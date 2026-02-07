@@ -329,8 +329,9 @@ def scan_all_cells_parallel():
     for r, c, w_team, w_id in results:
         if w_team:
             cell = board[r][c]
-            update_cell_after_win(cell, w_team, w_id)
-            changes += 1
+            if cell["owner"] != w_team:
+                update_cell_after_win(cell, w_team, w_id)
+                changes += 1
     
     if changes > 0:
         st.toast(f"{changes}개의 타일이 점령되었습니다!", icon="🎉")
@@ -539,4 +540,3 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
-
