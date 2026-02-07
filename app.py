@@ -6,6 +6,7 @@ import concurrent.futures
 import json
 import gspread
 from google.oauth2.service_account import Credentials
+from bs4 import BeautifulSoup
 
 # =========================================================
 # 0) 기본 설정
@@ -187,46 +188,55 @@ def fetch_problems_with_filter(level: int, user_filter_query: str):
         return []
 
 # =========================================================
-# [핵심] 제출번호로 정보 가져오기
+# [핵심] 제출번호로 정보 가져오기 (BOJ 직접 크롤링 버전)
 # =========================================================
-@st.cache_data(ttl=30)
 def fetch_submission_info(submission_id: int):
     """
-    solved.ac submission/show API를 사용.
-    성공하면:
-      - problemId
-      - handle
-      - result (AC인지)
-    를 가져올 수 있음.
+    백준(acmicpc.net)의 현황 페이지를 크롤링하여
+    problemId, handle, result를 가져옴.
     """
+    url = f"https://www.acmicpc.net/status?solution_id={submission_id}"
+    
+    # BOJ는 User-Agent가 없으면 요청을 차단할 수 있습니다.
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
     try:
-        res = requests.get(
-            SOLVED_SUBMISSION_SHOW,
-            params={"submissionId": submission_id},
-            headers=get_headers(),
-            timeout=3
-        )
+        res = requests.get(url, headers=headers, timeout=5)
         if res.status_code != 200:
             return None
+        
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # id가 solution-{submission_id} 인 tr 태그를 찾음
+        row = soup.find("tr", id=f"solution-{submission_id}")
+        if not row:
+            return None
+            
+        # 데이터 파싱 (순서: 제출번호, 아이디, 문제번호, 결과, ...)
+        # 아이디(User)
+        user_link = row.find("td", class_="user").find("a")
+        handle = user_link.text.strip() if user_link else None
+        
+        # 문제번호(Problem ID)
+        problem_link = row.find("td", class_="problem").find("a")
+        pid = int(problem_link.text.strip()) if problem_link else None
+        
+        # 결과(Result) - "맞았습니다!!" 등을 확인
+        result_span = row.find("td", class_="result").find("span", class_="result-text")
+        result_text = result_span.text.strip() if result_span else ""
 
-        data = res.json()
+        # BOJ의 "맞았습니다!!"를 우리 로직의 "AC"로 변환
+        final_result = "AC" if result_text == "맞았습니다!!" else result_text
 
-        # solved.ac 응답 구조:
-        # {
-        #   "submissionId": ...,
-        #   "problem": {"problemId": ...},
-        #   "user": {"handle": ...},
-        #   "result": "AC" ...
-        # }
-        pid = data.get("problem", {}).get("problemId")
-        handle = data.get("user", {}).get("handle")
-        result = data.get("result")  # "AC" or ...
         return {
             "problemId": pid,
             "handle": handle,
-            "result": result
+            "result": final_result
         }
-    except:
+    except Exception as e:
+        print(f"BOJ Crawling Error: {e}")
         return None
 
 # =========================================================
@@ -613,3 +623,4 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
+
