@@ -303,96 +303,42 @@ def check_cell_api_worker(r, c, cell_info, participants, session):
 
     return (r, c, winner_team, winner_id)
 
-def check_single_solved(session, user_id, problem_id):
-    """
-    Solved.ac API를 사용하여 특정 유저가 특정 문제를 풀었는지 확인합니다.
-    - Query: "s@유저아이디 id:문제번호"
-    - 결과 개수(count)가 1 이상이면 푼 것으로 간주
-    """
-    query = f"s@{user_id} id:{problem_id}"
-    try:
-        # get_headers() 함수가 정의되어 있어야 합니다.
-        res = session.get(SOLVED_SEARCH, params={"query": query}, headers=get_headers(), timeout=3)
-        if res.status_code == 200:
-            data = res.json()
-            # 검색 결과가 있으면(count > 0) 푼 문제임
-            is_solved = data.get("count", 0) > 0
-            return (user_id, problem_id, is_solved)
-    except:
-        pass
-    
-    # 에러 나거나 안 풀었으면 False 반환
-    return (user_id, problem_id, False)
-
 def scan_all_cells_parallel():
     board = st.session_state.board
     participants = st.session_state.participants
     
-    tasks = []
-    
-    # 세션 재사용
+    # 세션 하나로 재사용
     with requests.Session() as session:
         session.headers.update(get_headers())
         
-        # [최적화] ThreadPool을 30개로 늘려서 25개 문제를 '동시에' 찌릅니다.
-        # 이렇게 하면 1개 쿼리하는 시간(약 0.2초)만에 25개가 다 끝납니다.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
+        tasks = []
+        # 병렬 처리로 속도 향상 (API 호출이 많으므로)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
             for r in range(GRID_SIZE):
                 for c in range(GRID_SIZE):
                     cell = board[r][c]
-                    pid = cell["info"]["problemId"]
-                    if pid == 0: continue
-                    
-                    # 모든 참가자에 대해 검사
-                    for user_id in participants.keys():
-                        tasks.append(
-                            executor.submit(check_single_solved, session, user_id, pid)
-                        )
+                    # 이미 주인이 있더라도 뺏기는 로직이 있다면 계속 검사해야 함
+                    # 현재는 주인 바뀌는 것만 체크
+                    tasks.append(
+                        executor.submit(check_cell_api_worker, r, c, cell['info'], participants, session)
+                    )
         
-        # 결과 수집
         results = [f.result() for f in concurrent.futures.as_completed(tasks)]
     
-    # 결과 처리
-    # pid -> solved_users 리스트
-    solved_map = {} 
-    for user_id, pid, is_solved in results:
-        if is_solved:
-            if pid not in solved_map: solved_map[pid] = []
-            solved_map[pid].append(user_id)
-            
     changes = 0
-    # 보드 업데이트
-    for r in range(GRID_SIZE):
-        for c in range(GRID_SIZE):
+    for r, c, w_team, w_id in results:
+        if w_team:
             cell = board[r][c]
-            pid = cell["info"]["problemId"]
-            
-            if pid in solved_map:
-                # 푼 사람들이 있다면
-                winners = solved_map[pid]
-                
-                # API로는 정확한 제출 시간을 알기 어려우므로, 리스트의 첫 번째 사람을 승자로 간주
-                # (실제로는 tasks 완료 순서에 따라 결정됨)
-                winner_id = winners[0]
-                winner_team = participants[winner_id]
-                
-                # [수정 완료] 
-                # 조건문(if cell["owner"] != winner_team:)을 삭제했습니다.
-                # 이제 주인이 누구든 상관없이, 문제를 푼 사람이 나타나면 무조건 업데이트합니다.
-                
-                # 1. 빈 땅 -> 점령
-                # 2. 상대방 땅 -> 스틸 (주인 변경 + 새 문제)
-                # 3. 내 땅 -> 방어/레벨업 (주인 유지 + 새 문제)
-                
-                update_cell_after_win(cell, winner_team, winner_id)
+            if cell["owner"] != w_team:
+                update_cell_after_win(cell, w_team, w_id)
                 changes += 1
-
+    
     if changes > 0:
         st.toast(f"{changes}개의 타일이 점령되었습니다!", icon="🎉")
         time.sleep(1)
         st.rerun()
     else:
-        st.toast("변동 사항이 없습니다.", icon="💤")
+        st.toast("변동 사항이 없습니다. (Solved.ac 갱신 필요)", icon="💤")
 
 def check_winner():
     board = st.session_state.board
@@ -594,4 +540,3 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
-
