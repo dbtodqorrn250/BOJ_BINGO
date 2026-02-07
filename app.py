@@ -282,8 +282,6 @@ def scan_all_cells_parallel():
         session.headers.update(get_headers())
         
         # [최적화] ThreadPool을 30개로 늘려서 25개 문제를 '동시에' 찌릅니다.
-        # 이렇게 하면 1개 쿼리하는 시간(약 0.2초)만에 25개가 다 끝납니다.
-        # "Batch Query"보다 훨씬 안정적입니다.
         with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
             for r in range(GRID_SIZE):
                 for c in range(GRID_SIZE):
@@ -317,18 +315,22 @@ def scan_all_cells_parallel():
             
             if pid in solved_map:
                 # 푼 사람들이 있다면
-                # (API로는 정확한 제출 시간을 알기 어려우므로, 리스트의 첫 번째 사람을 승자로 간주)
-                # 실제로는 tasks 순서가 섞이므로 랜덤 당첨과 유사합니다.
                 winners = solved_map[pid]
                 
-                # 이미 같은 팀이 먹었으면 패스
-                # (상대 팀 땅을 뺏는 규칙이 있다면 여기서 조건문 수정)
+                # API로는 정확한 제출 시간을 알기 어려우므로, 리스트의 첫 번째 사람을 승자로 간주
+                # (네트워크 응답 순서에 따라 랜덤하게 결정됨)
                 winner_id = winners[0]
                 winner_team = participants[winner_id]
                 
-                if cell["owner"] != winner_team:
-                    update_cell_after_win(cell, winner_team, winner_id)
-                    changes += 1
+                # [수정 완료] 
+                # 조건문(if cell["owner"] != winner_team:)을 삭제했습니다.
+                # 이제 주인이 누구든 상관없이, 문제를 푼 사람이 나타나면 무조건 업데이트합니다.
+                # - 내 땅이면? -> 레벨업 (새 문제로 변경)
+                # - 남의 땅이면? -> 스틸 (주인 변경 + 새 문제로 변경)
+                # - 빈 땅이면? -> 점령
+                
+                update_cell_after_win(cell, winner_team, winner_id)
+                changes += 1
 
     if changes > 0:
         st.toast(f"{changes}개의 타일이 점령되었습니다!", icon="🎉")
@@ -536,3 +538,4 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
+
