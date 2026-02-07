@@ -303,6 +303,27 @@ def check_cell_api_worker(r, c, cell_info, participants, session):
 
     return (r, c, winner_team, winner_id)
 
+def check_single_solved(session, user_id, problem_id):
+    """
+    Solved.ac API를 사용하여 특정 유저가 특정 문제를 풀었는지 확인합니다.
+    - Query: "s@유저아이디 id:문제번호"
+    - 결과 개수(count)가 1 이상이면 푼 것으로 간주
+    """
+    query = f"s@{user_id} id:{problem_id}"
+    try:
+        # get_headers() 함수가 정의되어 있어야 합니다.
+        res = session.get(SOLVED_SEARCH, params={"query": query}, headers=get_headers(), timeout=3)
+        if res.status_code == 200:
+            data = res.json()
+            # 검색 결과가 있으면(count > 0) 푼 문제임
+            is_solved = data.get("count", 0) > 0
+            return (user_id, problem_id, is_solved)
+    except:
+        pass
+    
+    # 에러 나거나 안 풀었으면 False 반환
+    return (user_id, problem_id, False)
+
 def scan_all_cells_parallel():
     board = st.session_state.board
     participants = st.session_state.participants
@@ -573,3 +594,4 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
+
