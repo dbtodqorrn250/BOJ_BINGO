@@ -12,7 +12,7 @@ from google.oauth2.service_account import Credentials
 # =========================================================
 st.set_page_config(
     layout="wide",
-    page_title="BAEKJOON BINGO : SOLVED.AC",
+    page_title="BAEKJOON BINGO : FINAL",
     initial_sidebar_state="expanded"
 )
 
@@ -125,7 +125,6 @@ def load_state():
             st.session_state[k] = v
         if "used_problem_ids" in data:
             st.session_state.used_problem_ids = set(data["used_problem_ids"])
-        
         if "board" in st.session_state:
             board = st.session_state.board
             for r in range(len(board)):
@@ -146,7 +145,7 @@ def clear_state():
         del st.session_state[k]
 
 # =========================================================
-# 3) Solved.ac API
+# 3) Solved.ac API & Logic (안정성 최우선)
 # =========================================================
 TIER_NAMES = ["Unrated"] + [f"{r} {5-i}" for r in ["Bronze","Silver","Gold","Platinum","Diamond","Ruby"] for i in range(5)]
 def tier_to_name(tier: int):
@@ -175,27 +174,20 @@ def fetch_problems_with_filter(level: int, user_filter_query: str):
         return res.json().get("items", []) if res.status_code == 200 else []
     except: return []
 
-# =========================================================
-# [핵심] Solved.ac API로 풀이 여부 확인
-# =========================================================
-
-def check_solved_via_api(session, user_id: str, problem_id: int):
+def check_single_solved(session, user_id, problem_id):
     """
-    Solved.ac Search API를 사용하여 특정 유저가 문제를 풀었는지 확인합니다.
-    Query: 's@{user_id} id:{problem_id}'
-    결과 개수가 1개 이상이면 푼 것.
+    단일 문제에 대해 유저가 풀었는지 확인 (가장 정확함)
+    Query: 's@user_id id:problem_id'
     """
     query = f"s@{user_id} id:{problem_id}"
-    params = {"query": query}
     try:
-        # solved.ac API는 차단 확률이 매우 낮으므로 안전합니다.
-        res = session.get(SOLVED_SEARCH, params=params, headers=get_headers(), timeout=3)
+        res = session.get(SOLVED_SEARCH, params={"query": query}, headers=get_headers(), timeout=3)
         if res.status_code == 200:
-            data = res.json()
-            return data.get("count", 0) > 0
+            count = res.json().get("count", 0)
+            return (user_id, problem_id, count > 0)
     except:
         pass
-    return False
+    return (user_id, problem_id, False)
 
 # =========================================================
 # 4) 게임 로직
@@ -223,7 +215,6 @@ def init_game():
     st.session_state.used_problem_ids = set()
 
     filter_query = " ".join([f"-s@{u}" for u in participants.keys()]).strip()
-    
     pool = []
     for _ in range(GRID_SIZE * GRID_SIZE):
         items = fetch_problems_with_filter(1, filter_query)
@@ -264,7 +255,6 @@ def update_cell_after_win(cell, winner_team, winner_id):
     cell["capturer"] = winner_id
     
     next_lv = min(cell["level"] + 1, MAX_LEVEL)
-    
     filter_q = " ".join([f"-s@{u}" for u in participants.keys()]).strip()
     new_items = fetch_problems_with_filter(next_lv, filter_q)
     if not new_items: new_items = fetch_problems_with_filter(next_lv, "")
@@ -281,64 +271,71 @@ def update_cell_after_win(cell, winner_team, winner_id):
     add_log(f"{winner_team} 점령! #{old_pid} (by {winner_id})")
     save_state()
 
-def check_cell_api_worker(r, c, cell_info, participants, session):
-    pid = cell_info["problemId"]
-    if pid == 0: return (r, c, None, None)
-
-    # 1. 이 문제를 푼 사람이 있는지 API로 확인
-    # Solved.ac API는 ID 필터링이 정확하므로 매우 신뢰할 수 있음
-    solved_users = []
-    for user_id in participants.keys():
-        if check_solved_via_api(session, user_id, pid):
-            solved_users.append(user_id)
-    
-    if not solved_users:
-        return (r, c, None, None)
-
-    # 2. 누가 먼저 풀었는지(제출 시간)는 Solved.ac Search API로 알기 어려움
-    # 따라서, 발견된 사람 중 랜덤(또는 첫 번째)으로 점령 인정
-    # (백준이 차단된 상황에서의 최선책)
-    winner_id = solved_users[0] 
-    winner_team = participants[winner_id]
-
-    return (r, c, winner_team, winner_id)
-
 def scan_all_cells_parallel():
     board = st.session_state.board
     participants = st.session_state.participants
     
-    # 세션 하나로 재사용
+    tasks = []
+    
+    # 세션 재사용
     with requests.Session() as session:
         session.headers.update(get_headers())
         
-        tasks = []
-        # 병렬 처리로 속도 향상 (API 호출이 많으므로)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        # [최적화] ThreadPool을 30개로 늘려서 25개 문제를 '동시에' 찌릅니다.
+        # 이렇게 하면 1개 쿼리하는 시간(약 0.2초)만에 25개가 다 끝납니다.
+        # "Batch Query"보다 훨씬 안정적입니다.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
             for r in range(GRID_SIZE):
                 for c in range(GRID_SIZE):
                     cell = board[r][c]
-                    # 이미 주인이 있더라도 뺏기는 로직이 있다면 계속 검사해야 함
-                    # 현재는 주인 바뀌는 것만 체크
-                    tasks.append(
-                        executor.submit(check_cell_api_worker, r, c, cell['info'], participants, session)
-                    )
+                    pid = cell["info"]["problemId"]
+                    if pid == 0: continue
+                    
+                    # 모든 참가자에 대해 검사
+                    for user_id in participants.keys():
+                        tasks.append(
+                            executor.submit(check_single_solved, session, user_id, pid)
+                        )
         
+        # 결과 수집
         results = [f.result() for f in concurrent.futures.as_completed(tasks)]
     
+    # 결과 처리
+    # pid -> solved_users 리스트
+    solved_map = {} 
+    for user_id, pid, is_solved in results:
+        if is_solved:
+            if pid not in solved_map: solved_map[pid] = []
+            solved_map[pid].append(user_id)
+            
     changes = 0
-    for r, c, w_team, w_id in results:
-        if w_team:
+    # 보드 업데이트
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
             cell = board[r][c]
-            if cell["owner"] != w_team:
-                update_cell_after_win(cell, w_team, w_id)
-                changes += 1
-    
+            pid = cell["info"]["problemId"]
+            
+            if pid in solved_map:
+                # 푼 사람들이 있다면
+                # (API로는 정확한 제출 시간을 알기 어려우므로, 리스트의 첫 번째 사람을 승자로 간주)
+                # 실제로는 tasks 순서가 섞이므로 랜덤 당첨과 유사합니다.
+                winners = solved_map[pid]
+                
+                # 이미 같은 팀이 먹었으면 패스
+                # (상대 팀 땅을 뺏는 규칙이 있다면 여기서 조건문 수정)
+                winner_id = winners[0]
+                winner_team = participants[winner_id]
+                
+                if cell["owner"] != winner_team:
+                    update_cell_after_win(cell, winner_team, winner_id)
+                    changes += 1
+
     if changes > 0:
         st.toast(f"{changes}개의 타일이 점령되었습니다!", icon="🎉")
         time.sleep(1)
         st.rerun()
     else:
-        st.toast("변동 사항이 없습니다. (Solved.ac 갱신 필요)", icon="💤")
+        st.toast("변동 사항이 없습니다.", icon="💤")
 
 def check_winner():
     board = st.session_state.board
@@ -357,7 +354,7 @@ def check_winner():
     return r_cnt, b_cnt
 
 # =========================================================
-# 5) 렌더링 헬퍼
+# 5) 렌더링
 # =========================================================
 def render_cell_html(cell):
     pid = cell["info"]["problemId"]
@@ -420,7 +417,6 @@ def render_team_panel_html(team_name: str, users: list, cap_cnt: dict):
     <div class="capture-label">CAPTURED</div>
   </div>
 </div>"""
-    
     return f"""
 <div class="team-panel">
   <div class="team-title" style="background:{grad}; -webkit-background-clip:text; -webkit-text-fill-color:transparent;">
@@ -437,7 +433,7 @@ init_state()
 st.markdown("""
 <div style="margin-bottom: 20px;">
   <div style="font-size: .95rem; color: var(--muted2); font-weight: 800; letter-spacing: .5px;">⚔️ BAEKJOON</div>
-  <div style="font-size: 2.4rem; font-weight: 1000; letter-spacing: -1px;">BINGO ARENA <span style="font-size:1rem; color:#22b8cf;">SOLVED.AC</span></div>
+  <div style="font-size: 2.4rem; font-weight: 1000; letter-spacing: -1px;">BINGO ARENA <span style="font-size:1rem; color:#22b8cf;">API</span></div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -481,10 +477,10 @@ with st.sidebar:
         st.success("🟢 게임 진행 중 (Solved.ac API)")
         st.markdown("### ⚡ Action")
         if st.button("🔄 업데이트", type="primary", use_container_width=True):
-            with st.spinner("Solved.ac 데이터 확인 중..."):
+            with st.spinner("채점 현황 확인 중..."):
                 scan_all_cells_parallel()
         
-        st.info("💡 업데이트가 안 되면 solved.ac 사이트에서 '프로필 갱신' 버튼을 눌러주세요.")
+        st.caption("💡 반영이 안 되면 Solved.ac 사이트에서 [갱신] 버튼을 누르세요.")
 
         st.markdown("---")
         st.markdown("### 📜 Logs")
