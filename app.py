@@ -486,7 +486,7 @@ with st.sidebar:
     else:
         st.success("🟢 게임 진행 중")
         st.markdown("### 🔍 해결 인증")
-        st.info("제출번호 대신 '푼 사람'과 '문제번호'를 입력하세요.")
+        st.info("'푼 사람'과 '문제번호'를 입력하세요.")
 
         all_players = st.session_state.red_users + st.session_state.blue_users
         
@@ -568,3 +568,4 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
+
