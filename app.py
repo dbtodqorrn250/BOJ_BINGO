@@ -36,6 +36,9 @@ LEVEL_MAPPING = {
 SOLVED_SEARCH = "https://solved.ac/api/v3/search/problem"
 SOLVED_USER_SHOW = "https://solved.ac/api/v3/user/show"
 
+# 제출 조회 (핵심)
+SOLVED_SUBMISSION_SHOW = "https://solved.ac/api/v3/submission/show"
+
 def get_headers():
     return {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -105,7 +108,7 @@ def save_state():
             data[k] = st.session_state[k]
     if "used_problem_ids" in st.session_state:
         data["used_problem_ids"] = list(st.session_state.used_problem_ids)
-    
+
     try:
         sheet = get_google_sheet_connection()
         if sheet:
@@ -117,15 +120,17 @@ def save_state():
 def load_state():
     try:
         sheet = get_google_sheet_connection()
-        if not sheet: return False
+        if not sheet:
+            return False
         val = sheet.acell('A1').value
-        if not val: return False
+        if not val:
+            return False
         data = json.loads(val)
         for k, v in data.items():
             st.session_state[k] = v
         if "used_problem_ids" in data:
             st.session_state.used_problem_ids = set(data["used_problem_ids"])
-        
+
         if "board" in st.session_state:
             board = st.session_state.board
             for r in range(len(board)):
@@ -140,8 +145,10 @@ def load_state():
 def clear_state():
     try:
         sheet = get_google_sheet_connection()
-        if sheet: sheet.update(range_name='A1', values=[['']])
-    except: pass
+        if sheet:
+            sheet.update(range_name='A1', values=[['']])
+    except:
+        pass
     for k in list(st.session_state.keys()):
         del st.session_state[k]
 
@@ -150,21 +157,24 @@ def clear_state():
 # =========================================================
 TIER_NAMES = ["Unrated"] + [f"{r} {5-i}" for r in ["Bronze","Silver","Gold","Platinum","Diamond","Ruby"] for i in range(5)]
 def tier_to_name(tier: int):
-    if tier is None: return "?"
+    if tier is None:
+        return "?"
     return TIER_NAMES[tier] if 0 <= tier < len(TIER_NAMES) else str(tier)
 
 @st.cache_data(ttl=600)
 def solved_user_exists(handle: str):
     try:
         return requests.get(f"{SOLVED_USER_SHOW}?handle={handle}", timeout=3).status_code == 200
-    except: return False
+    except:
+        return False
 
 @st.cache_data(ttl=600)
 def fetch_user_tier(handle: str):
     try:
         res = requests.get(f"{SOLVED_USER_SHOW}?handle={handle}", timeout=3)
         return res.json().get("tier") if res.status_code == 200 else None
-    except: return None
+    except:
+        return None
 
 @st.cache_data(ttl=600)
 def fetch_problems_with_filter(level: int, user_filter_query: str):
@@ -173,29 +183,51 @@ def fetch_problems_with_filter(level: int, user_filter_query: str):
     try:
         res = requests.get(SOLVED_SEARCH, params={"query": query, "sort": "random", "page": 1}, timeout=3)
         return res.json().get("items", []) if res.status_code == 200 else []
-    except: return []
-
-# =========================================================
-# [핵심] Solved.ac API로 풀이 여부 확인
-# =========================================================
-
-def check_solved_via_api(session, user_id: str, problem_id: int):
-    """
-    Solved.ac Search API를 사용하여 특정 유저가 문제를 풀었는지 확인합니다.
-    Query: 's@{user_id} id:{problem_id}'
-    결과 개수가 1개 이상이면 푼 것.
-    """
-    query = f"s@{user_id} id:{problem_id}"
-    params = {"query": query}
-    try:
-        # solved.ac API는 차단 확률이 매우 낮으므로 안전합니다.
-        res = session.get(SOLVED_SEARCH, params=params, headers=get_headers(), timeout=3)
-        if res.status_code == 200:
-            data = res.json()
-            return data.get("count", 0) > 0
     except:
-        pass
-    return False
+        return []
+
+# =========================================================
+# [핵심] 제출번호로 정보 가져오기
+# =========================================================
+@st.cache_data(ttl=30)
+def fetch_submission_info(submission_id: int):
+    """
+    solved.ac submission/show API를 사용.
+    성공하면:
+      - problemId
+      - handle
+      - result (AC인지)
+    를 가져올 수 있음.
+    """
+    try:
+        res = requests.get(
+            SOLVED_SUBMISSION_SHOW,
+            params={"submissionId": submission_id},
+            headers=get_headers(),
+            timeout=3
+        )
+        if res.status_code != 200:
+            return None
+
+        data = res.json()
+
+        # solved.ac 응답 구조:
+        # {
+        #   "submissionId": ...,
+        #   "problem": {"problemId": ...},
+        #   "user": {"handle": ...},
+        #   "result": "AC" ...
+        # }
+        pid = data.get("problem", {}).get("problemId")
+        handle = data.get("user", {}).get("handle")
+        result = data.get("result")  # "AC" or ...
+        return {
+            "problemId": pid,
+            "handle": handle,
+            "result": result
+        }
+    except:
+        return None
 
 # =========================================================
 # 4) 게임 로직
@@ -217,26 +249,30 @@ def add_log(msg: str):
 def init_game():
     board = []
     participants = {}
-    for u in st.session_state.red_users: participants[u] = "RED"
-    for u in st.session_state.blue_users: participants[u] = "BLUE"
+    for u in st.session_state.red_users:
+        participants[u] = "RED"
+    for u in st.session_state.blue_users:
+        participants[u] = "BLUE"
     st.session_state.participants = participants
     st.session_state.used_problem_ids = set()
 
     filter_query = " ".join([f"-s@{u}" for u in participants.keys()]).strip()
-    
+
     pool = []
     for _ in range(GRID_SIZE * GRID_SIZE):
         items = fetch_problems_with_filter(1, filter_query)
-        if not items: items = fetch_problems_with_filter(1, "")
-        
+        if not items:
+            items = fetch_problems_with_filter(1, "")
+
         candidate = None
         for _ in range(5):
             c = random.choice(items) if items else {"problemId": 0, "titleKo": "문제 부족", "level": 0}
             if c["problemId"] not in st.session_state.used_problem_ids:
                 candidate = c
                 break
-        if not candidate: candidate = items[0] if items else {"problemId":0, "titleKo":"Error", "level":0}
-        
+        if not candidate:
+            candidate = items[0] if items else {"problemId": 0, "titleKo": "Error", "level": 0}
+
         pool.append(candidate)
         st.session_state.used_problem_ids.add(candidate["problemId"])
 
@@ -262,15 +298,16 @@ def update_cell_after_win(cell, winner_team, winner_id):
 
     cell["owner"] = winner_team
     cell["capturer"] = winner_id
-    
+
     next_lv = min(cell["level"] + 1, MAX_LEVEL)
-    
+
     filter_q = " ".join([f"-s@{u}" for u in participants.keys()]).strip()
     new_items = fetch_problems_with_filter(next_lv, filter_q)
-    if not new_items: new_items = fetch_problems_with_filter(next_lv, "")
-    
+    if not new_items:
+        new_items = fetch_problems_with_filter(next_lv, "")
+
     picked = random.choice(new_items) if new_items else cell["info"]
-    for _ in range(5):
+    for _ in range(10):
         if picked["problemId"] not in st.session_state.used_problem_ids:
             break
         picked = random.choice(new_items)
@@ -281,64 +318,65 @@ def update_cell_after_win(cell, winner_team, winner_id):
     add_log(f"{winner_team} 점령! #{old_pid} (by {winner_id})")
     save_state()
 
-def check_cell_api_worker(r, c, cell_info, participants, session):
-    pid = cell_info["problemId"]
-    if pid == 0: return (r, c, None, None)
-
-    # 1. 이 문제를 푼 사람이 있는지 API로 확인
-    # Solved.ac API는 ID 필터링이 정확하므로 매우 신뢰할 수 있음
-    solved_users = []
-    for user_id in participants.keys():
-        if check_solved_via_api(session, user_id, pid):
-            solved_users.append(user_id)
-    
-    if not solved_users:
-        return (r, c, None, None)
-
-    # 2. 누가 먼저 풀었는지(제출 시간)는 Solved.ac Search API로 알기 어려움
-    # 따라서, 발견된 사람 중 랜덤(또는 첫 번째)으로 점령 인정
-    # (백준이 차단된 상황에서의 최선책)
-    winner_id = solved_users[0] 
-    winner_team = participants[winner_id]
-
-    return (r, c, winner_team, winner_id)
-
-def scan_all_cells_parallel():
+def find_cell_by_problem_id(pid: int):
     board = st.session_state.board
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            if board[r][c]["info"]["problemId"] == pid:
+                return (r, c)
+    return None
+
+def apply_submission_capture(submission_id: int):
+    """
+    제출번호를 입력받으면:
+      1) solved.ac submission/show로 pid, handle, result 가져오기
+      2) 참가자(handle)인지 확인
+      3) AC인지 확인
+      4) 보드에 해당 pid가 있는지 확인
+      5) 점령 처리
+    """
+    info = fetch_submission_info(submission_id)
+    if not info:
+        st.error("❌ 제출번호를 조회할 수 없습니다. (solved.ac에서 아직 추적되지 않았거나 잘못된 번호)")
+        return
+
+    pid = info.get("problemId")
+    handle = info.get("handle")
+    result = info.get("result")
+
+    if not pid or not handle:
+        st.error("❌ 제출 정보 파싱 실패 (solved.ac 응답 이상)")
+        return
+
+    # AC 여부 확인
+    if result != "AC":
+        st.error(f"❌ 이 제출은 정답(AC)이 아닙니다. (result={result})")
+        return
+
     participants = st.session_state.participants
-    
-    # 세션 하나로 재사용
-    with requests.Session() as session:
-        session.headers.update(get_headers())
-        
-        tasks = []
-        # 병렬 처리로 속도 향상 (API 호출이 많으므로)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-            for r in range(GRID_SIZE):
-                for c in range(GRID_SIZE):
-                    cell = board[r][c]
-                    # 이미 주인이 있더라도 뺏기는 로직이 있다면 계속 검사해야 함
-                    # 현재는 주인 바뀌는 것만 체크
-                    tasks.append(
-                        executor.submit(check_cell_api_worker, r, c, cell['info'], participants, session)
-                    )
-        
-        results = [f.result() for f in concurrent.futures.as_completed(tasks)]
-    
-    changes = 0
-    for r, c, w_team, w_id in results:
-        if w_team:
-            cell = board[r][c]
-            if cell["owner"] != w_team:
-                update_cell_after_win(cell, w_team, w_id)
-                changes += 1
-    
-    if changes > 0:
-        st.toast(f"{changes}개의 타일이 점령되었습니다!", icon="🎉")
-        time.sleep(1)
-        st.rerun()
-    else:
-        st.toast("변동 사항이 없습니다. (Solved.ac 갱신 필요)", icon="💤")
+    if handle not in participants:
+        st.error(f"❌ 참가자가 아닙니다: {handle}")
+        return
+
+    pos = find_cell_by_problem_id(pid)
+    if not pos:
+        st.error(f"❌ 보드에 없는 문제입니다: #{pid}")
+        return
+
+    r, c = pos
+    cell = st.session_state.board[r][c]
+
+    winner_team = participants[handle]
+
+    # 이미 같은 팀이면 중복 점령 방지
+    if cell["owner"] == winner_team:
+        st.warning(f"⚠️ 이미 {winner_team} 팀이 점령한 칸입니다.")
+        return
+
+    update_cell_after_win(cell, winner_team, handle)
+    st.toast(f"🎉 {winner_team} 점령 성공! (#{pid} by {handle})", icon="🏁")
+    time.sleep(0.7)
+    st.rerun()
 
 def check_winner():
     board = st.session_state.board
@@ -352,8 +390,10 @@ def check_winner():
     r_cnt, b_cnt = 0, 0
     for line in lines:
         owners = [board[r][c]["owner"] for r, c in line]
-        if all(o == "RED" for o in owners): r_cnt += 1
-        if all(o == "BLUE" for o in owners): b_cnt += 1
+        if all(o == "RED" for o in owners):
+            r_cnt += 1
+        if all(o == "BLUE" for o in owners):
+            b_cnt += 1
     return r_cnt, b_cnt
 
 # =========================================================
@@ -397,12 +437,12 @@ def render_team_panel_html(team_name: str, users: list, cap_cnt: dict):
     is_red = (team_name == "RED")
     grad = "linear-gradient(90deg,var(--red1),var(--red2))" if is_red else "linear-gradient(90deg,var(--blue1),var(--blue2))"
     icon = "🔴" if is_red else "🔵"
-    
+
     enriched = []
     for u in users:
         enriched.append((u, fetch_user_tier(u), cap_cnt.get(u, 0)))
     enriched.sort(key=lambda x: (-x[2], -(x[1] or 0), x[0].lower()))
-    
+
     players_html = ""
     if not enriched:
         players_html = "<div style='color:rgba(255,255,255,.55); font-weight:800;'>(없음)</div>"
@@ -420,7 +460,7 @@ def render_team_panel_html(team_name: str, users: list, cap_cnt: dict):
     <div class="capture-label">CAPTURED</div>
   </div>
 </div>"""
-    
+
     return f"""
 <div class="team-panel">
   <div class="team-title" style="background:{grad}; -webkit-background-clip:text; -webkit-text-fill-color:transparent;">
@@ -444,52 +484,71 @@ st.markdown("""
 with st.sidebar:
     st.markdown("## 🎮 Game Control")
     st.markdown("---")
-    
+
     if not st.session_state.game_started:
         st.markdown("### 🔴 RED TEAM")
         r_in = st.text_input("RED 추가", key="r_in")
         if st.button("➕ RED 추가", use_container_width=True):
             if r_in and r_in not in st.session_state.red_users and r_in not in st.session_state.blue_users:
-                if solved_user_exists(r_in): st.session_state.red_users.append(r_in)
-                else: st.error("존재하지 않음")
+                if solved_user_exists(r_in):
+                    st.session_state.red_users.append(r_in)
+                    save_state()
+                    st.rerun()
+                else:
+                    st.error("존재하지 않음")
         for u in st.session_state.red_users:
-            c1, c2 = st.columns([4,1])
+            c1, c2 = st.columns([4, 1])
             c1.write(f"• {u}")
-            if c2.button("x", key=f"dr_{u}"): 
+            if c2.button("x", key=f"dr_{u}"):
                 st.session_state.red_users.remove(u)
+                save_state()
                 st.rerun()
 
         st.markdown("### 🔵 BLUE TEAM")
         b_in = st.text_input("BLUE 추가", key="b_in")
         if st.button("➕ BLUE 추가", use_container_width=True):
             if b_in and b_in not in st.session_state.red_users and b_in not in st.session_state.blue_users:
-                if solved_user_exists(b_in): st.session_state.blue_users.append(b_in)
-                else: st.error("존재하지 않음")
+                if solved_user_exists(b_in):
+                    st.session_state.blue_users.append(b_in)
+                    save_state()
+                    st.rerun()
+                else:
+                    st.error("존재하지 않음")
         for u in st.session_state.blue_users:
-            c1, c2 = st.columns([4,1])
+            c1, c2 = st.columns([4, 1])
             c1.write(f"• {u}")
-            if c2.button("x", key=f"db_{u}"): 
+            if c2.button("x", key=f"db_{u}"):
                 st.session_state.blue_users.remove(u)
+                save_state()
                 st.rerun()
 
         st.markdown("---")
-        if st.button("🚀 START GAME", type="primary", use_container_width=True, 
-                     disabled=not (st.session_state.red_users and st.session_state.blue_users)):
+        if st.button(
+            "🚀 START GAME",
+            type="primary",
+            use_container_width=True,
+            disabled=not (st.session_state.red_users and st.session_state.blue_users),
+        ):
             init_game()
             st.rerun()
+
     else:
-        st.success("🟢 게임 진행 중 (Solved.ac API)")
-        st.markdown("### ⚡ Action")
-        if st.button("🔄 업데이트", type="primary", use_container_width=True):
-            with st.spinner("Solved.ac 데이터 확인 중..."):
-                scan_all_cells_parallel()
-        
-        st.info("💡 업데이트가 안 되면 solved.ac 사이트에서 '프로필 갱신' 버튼을 눌러주세요.")
+        st.success("🟢 게임 진행 중 (Submission ID Mode)")
+        st.markdown("### 🧾 제출번호로 점령")
+
+        sub_id_str = st.text_input("제출번호 입력", placeholder="예: 123456789", key="sub_id_input")
+
+        if st.button("🏁 제출 확인 & 점령", type="primary", use_container_width=True):
+            if not sub_id_str.strip().isdigit():
+                st.error("제출번호는 숫자만 입력하세요.")
+            else:
+                apply_submission_capture(int(sub_id_str.strip()))
 
         st.markdown("---")
         st.markdown("### 📜 Logs")
-        for x in st.session_state.logs: st.write("• "+x)
-        
+        for x in st.session_state.logs:
+            st.write("• " + x)
+
         st.markdown("---")
         with st.expander("관리자 모드"):
             pw = st.text_input("Admin PW", type="password")
@@ -497,7 +556,8 @@ with st.sidebar:
                 if pw == ADMIN_PASSWORD:
                     clear_state()
                     st.rerun()
-                else: st.error("비번 오류")
+                else:
+                    st.error("비번 오류")
 
 if not st.session_state.game_started:
     st.info("👈 왼쪽 사이드바에서 플레이어를 등록하고 게임을 시작하세요!")
@@ -505,28 +565,41 @@ if not st.session_state.game_started:
 
 r_score, b_score = check_winner()
 c1, c2, c3 = st.columns(3)
-c1.markdown(f"""<div style="background:rgba(255,77,109,.1); border:1px solid rgba(255,77,109,.3); border-radius:18px; padding:15px; text-align:center;">
-<div style="color:#ffd6de; font-weight:900;">🔴 RED</div><div style="font-size:2.2rem; font-weight:1000;">{r_score}</div></div>""", unsafe_allow_html=True)
+c1.markdown(
+    f"""<div style="background:rgba(255,77,109,.1); border:1px solid rgba(255,77,109,.3); border-radius:18px; padding:15px; text-align:center;">
+<div style="color:#ffd6de; font-weight:900;">🔴 RED</div><div style="font-size:2.2rem; font-weight:1000;">{r_score}</div></div>""",
+    unsafe_allow_html=True,
+)
 
-c2.markdown(f"""<div style="background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.1); border-radius:18px; padding:15px; text-align:center;">
-<div style="color:var(--muted); font-weight:900;">STATUS</div><div style="font-size:1rem; margin-top:10px;">Running</div></div>""", unsafe_allow_html=True)
+c2.markdown(
+    f"""<div style="background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.1); border-radius:18px; padding:15px; text-align:center;">
+<div style="color:var(--muted); font-weight:900;">STATUS</div><div style="font-size:1rem; margin-top:10px;">Running</div></div>""",
+    unsafe_allow_html=True,
+)
 
-c3.markdown(f"""<div style="background:rgba(77,171,247,.1); border:1px solid rgba(77,171,247,.3); border-radius:18px; padding:15px; text-align:center;">
-<div style="color:#d6ecff; font-weight:900;">🔵 BLUE</div><div style="font-size:2.2rem; font-weight:1000;">{b_score}</div></div>""", unsafe_allow_html=True)
+c3.markdown(
+    f"""<div style="background:rgba(77,171,247,.1); border:1px solid rgba(77,171,247,.3); border-radius:18px; padding:15px; text-align:center;">
+<div style="color:#d6ecff; font-weight:900;">🔵 BLUE</div><div style="font-size:2.2rem; font-weight:1000;">{b_score}</div></div>""",
+    unsafe_allow_html=True,
+)
 
 st.write("")
 
 if r_score >= 3 or b_score >= 3:
     win = "RED" if r_score >= 3 else "BLUE"
-    bg = "linear-gradient(90deg,var(--red1),var(--red2))" if win=="RED" else "linear-gradient(90deg,var(--blue1),var(--blue2))"
+    bg = "linear-gradient(90deg,var(--red1),var(--red2))" if win == "RED" else "linear-gradient(90deg,var(--blue1),var(--blue2))"
     st.balloons()
-    st.markdown(f"""<div style="background:{bg}; padding:20px; border-radius:20px; text-align:center; font-size:1.8rem; font-weight:1000; box-shadow:0 10px 30px rgba(0,0,0,.5);">🏆 {win} WIN! 🏆</div>""", unsafe_allow_html=True)
+    st.markdown(
+        f"""<div style="background:{bg}; padding:20px; border-radius:20px; text-align:center; font-size:1.8rem; font-weight:1000; box-shadow:0 10px 30px rgba(0,0,0,.5);">🏆 {win} WIN! 🏆</div>""",
+        unsafe_allow_html=True,
+    )
 
 cap_cnt = {}
 for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         cp = st.session_state.board[r][c].get("capturer")
-        if cp: cap_cnt[cp] = cap_cnt.get(cp, 0) + 1
+        if cp:
+            cap_cnt[cp] = cap_cnt.get(cp, 0) + 1
 
 tc1, tc2 = st.columns(2, gap="medium")
 tc1.markdown(render_team_panel_html("RED", st.session_state.red_users, cap_cnt), unsafe_allow_html=True)
