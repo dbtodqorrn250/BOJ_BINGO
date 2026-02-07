@@ -434,26 +434,27 @@ def get_submission_id(user_id: str, problem_id: int):
 def check_single_cell_logic(cell_info, participants):
     pid = cell_info["problemId"]
 
-    or_query = " | ".join([f"s@{u}" for u in participants.keys()])
-    query = f"id:{pid} lang:ko ({or_query})"
-
-    try:
-        res = requests.get(SOLVED_SEARCH, params={"query": query}, headers=get_headers(), timeout=3)
-        if res.status_code != 200 or res.json().get("count", 0) == 0:
-            return None, None
-    except:
-        return None, None
+    # ---------------------------------------------------------
+    # [변경점] Solved.ac API 확인 로직을 전부 삭제했습니다.
+    # 이제 무조건 백준 사이트 채점 현황판을 직접 확인합니다.
+    # ---------------------------------------------------------
 
     min_sub_id = float("inf")
     winner_team = None
     winner_id = None
 
+    # 모든 참가자에 대해 백준 채점 현황(맞았습니다)을 조회
     for user_id, team in participants.items():
+        # 이 함수가 백준 사이트(acmicpc.net/status)를 직접 긁어옵니다.
         sub_id = get_submission_id(user_id, pid)
-        if sub_id != float("inf") and sub_id < min_sub_id:
-            min_sub_id = sub_id
-            winner_team = team
-            winner_id = user_id
+        
+        # 크롤링 성공 시 (제출 번호가 inf가 아님)
+        if sub_id != float("inf"):
+            # 가장 옛날에 푼 사람(제출 번호가 작은 사람)이 우선권을 가짐
+            if sub_id < min_sub_id:
+                min_sub_id = sub_id
+                winner_team = team
+                winner_id = user_id
 
     return winner_team, winner_id
 
@@ -907,5 +908,6 @@ for r in range(GRID_SIZE):
         with cols[c]:
 
             st.markdown(render_cell_html(cell), unsafe_allow_html=True)
+
 
 
