@@ -26,10 +26,10 @@ except:
 
 LEVEL_MAPPING = {
     1: "6..10",
-    2: "11..15",
-    3: "16..20",
-    4: "21..25",
-    5: "26..30",
+    2: "11..13",
+    3: "14..16",
+    4: "17..19",
+    5: "20..23",
 }
 
 SOLVED_SEARCH = "https://solved.ac/api/v3/search/problem"
@@ -568,5 +568,6 @@ for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
+
 
 
