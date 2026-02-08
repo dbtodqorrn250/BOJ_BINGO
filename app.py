@@ -54,6 +54,38 @@ hr { border-color: rgba(255,255,255,.08) !important; }
 a.problem-link{ text-decoration:none; color: var(--muted); font-size: .78rem; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,.03); display: inline-block; }
 a.problem-link:hover{ color: var(--text); border-color: rgba(255,255,255,.2); }
 
+.grid-select {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.grid-card {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 18px;
+  background: rgba(255,255,255,.03);
+  cursor: pointer;
+  text-align: center;
+  font-weight: 900;
+  transition: all .2s ease;
+}
+.grid-card:hover {
+  border-color: rgba(255,255,255,.25);
+  transform: translateY(-2px);
+}
+.grid-active {
+  background: linear-gradient(135deg, rgba(77,171,247,.25), rgba(255,77,109,.25));
+  box-shadow: var(--shadow);
+}
+.grid-title {
+  font-size: 1.3rem;
+}
+.grid-desc {
+  font-size: .85rem;
+  color: var(--muted2);
+  margin-top: 6px;
+}
+
 .bingo-card{ position: relative; background: rgba(255,255,255,.03); border: 1px solid var(--border); border-radius: 22px; padding: 14px; min-height: 168px; box-shadow: var(--shadow); overflow: hidden; transition: transform 0.2s ease; }
 .bingo-card:hover{ border-color: rgba(255,255,255,.18); transform: translateY(-2px); }
 .badge{ font-size: .72rem; padding: 6px 12px; border-radius: 999px; font-weight: 900; letter-spacing: .2px; border: 1px solid rgba(255,255,255,.10); }
@@ -452,8 +484,36 @@ with st.sidebar:
 
     if not st.session_state.game_started:
         st.markdown("### ⚙️ SETUP")
-        sel_size_str = st.radio("빙고판 크기 선택", ["3 x 3", "5 x 5"], index=1)
-        sel_size = 3 if sel_size_str == "3 x 3" else 5
+        if "sel_size" not in st.session_state:
+            st.session_state.sel_size = 5
+        
+        st.markdown("### 🎲 빙고판 크기 선택")
+        
+        st.markdown('<div class="grid-select">', unsafe_allow_html=True)
+        
+        if st.button("3 x 3", key="grid3", use_container_width=True):
+            st.session_state.sel_size = 3
+        if st.button("5 x 5", key="grid5", use_container_width=True):
+            st.session_state.sel_size = 5
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown(
+            f"""
+        <div class="grid-card {'grid-active' if st.session_state.sel_size==3 else ''}">
+          <div class="grid-title">3 × 3</div>
+          <div class="grid-desc">빠른 게임 · 캐주얼</div>
+        </div>
+        <div style="height:10px"></div>
+        <div class="grid-card {'grid-active' if st.session_state.sel_size==5 else ''}">
+          <div class="grid-title">5 × 5</div>
+          <div class="grid-desc">정규전 · 전략적</div>
+        </div>
+        """,
+            unsafe_allow_html=True
+        )
+        
+        sel_size = st.session_state.sel_size
         
         st.markdown("---")
         
@@ -601,3 +661,4 @@ with tc1:
 
 with tc2:
     st.markdown(render_team_panel_html("BLUE", st.session_state.blue_users, cap_cnt), unsafe_allow_html=True)
+
