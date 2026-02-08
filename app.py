@@ -15,7 +15,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-GRID_SIZE = 5
 MAX_LEVEL = 5
 SHEET_NAME = "BingoData"
 
@@ -91,7 +90,8 @@ def get_google_sheet_connection():
         return None
 
 def save_state():
-    keys = ["game_started", "red_users", "blue_users", "logs", "board", "participants"]
+    # [수정됨] grid_size 정보도 저장해야 함
+    keys = ["game_started", "red_users", "blue_users", "logs", "board", "participants", "grid_size"]
     data = {}
     for k in keys:
         if k in st.session_state:
@@ -177,14 +177,9 @@ def fetch_problems_with_filter(level: int, user_filter_query: str):
         return []
 
 # =========================================================
-# [핵심] 해결 여부 조회 (User + Problem ID 매칭)
+# [핵심] 해결 여부 조회
 # =========================================================
 def check_user_cleared_problem(handle: str, problem_id: int):
-    """
-    Solved.ac API의 고급 검색 기능을 사용합니다.
-    쿼리: "id:{문제번호} s@{유저명}"
-    이 쿼리의 결과가 존재하면(items 개수가 0보다 크면) 푼 것으로 간주합니다.
-    """
     query = f"id:{problem_id} s@{handle}"
     try:
         res = requests.get(
@@ -195,7 +190,6 @@ def check_user_cleared_problem(handle: str, problem_id: int):
         )
         if res.status_code == 200:
             data = res.json()
-            # 검색 결과가 있으면(count > 0) 푼 문제입니다.
             return data.get("count", 0) > 0
         return False
     except:
@@ -212,13 +206,18 @@ def init_state():
             st.session_state.blue_users = []
             st.session_state.logs = []
             st.session_state.used_problem_ids = set()
+            st.session_state.grid_size = 5 # 기본값
 
 def add_log(msg: str):
     st.session_state.logs.insert(0, msg)
     st.session_state.logs = st.session_state.logs[:7]
     save_state()
 
-def init_game():
+def init_game(size_choice: int):
+    # [수정됨] Grid Size 저장
+    st.session_state.grid_size = size_choice
+    grid_n = size_choice
+
     board = []
     participants = {}
     for u in st.session_state.red_users:
@@ -230,20 +229,33 @@ def init_game():
 
     filter_query = " ".join([f"-s@{u}" for u in participants.keys()]).strip()
 
-    # [수정됨] 레벨 1~5를 각각 5개씩 생성하고 섞습니다.
+    # [수정됨] 3x3 vs 5x5 난이도 분포 로직 분기
     initial_levels = []
-    for lv in range(1, 6):
-        initial_levels.extend([lv] * 5)
+    if grid_n == 5:
+        # 5x5: 각 레벨 5개씩 (총 25)
+        for lv in range(1, 6):
+            initial_levels.extend([lv] * 5)
+    else:
+        # 3x3: 요청하신 대로 (1:2개, 2:2개, 3:1개, 4:2개, 5:2개) -> 총 9개
+        # Lv1: 2개
+        initial_levels.extend([1] * 2)
+        # Lv2: 2개
+        initial_levels.extend([2] * 2)
+        # Lv3: 1개
+        initial_levels.extend([3] * 1)
+        # Lv4: 2개
+        initial_levels.extend([4] * 2)
+        # Lv5: 2개
+        initial_levels.extend([5] * 2)
+    
     random.shuffle(initial_levels)
 
     pool = []
-    
-    # 25개의 칸을 채우기 위해 섞인 레벨 리스트를 순회합니다.
-    for i in range(GRID_SIZE * GRID_SIZE):
+    # 선택된 Grid 크기만큼 문제 생성
+    for i in range(grid_n * grid_n):
         target_lv = initial_levels[i]
         items = fetch_problems_with_filter(target_lv, filter_query)
         
-        # 해당 레벨 문제가 없으면 그냥 레벨1이나 아무거나 가져오는 예외처리
         if not items:
             items = fetch_problems_with_filter(1, "")
 
@@ -260,11 +272,10 @@ def init_game():
         st.session_state.used_problem_ids.add(candidate["problemId"])
 
     idx = 0
-    for r in range(GRID_SIZE):
+    for r in range(grid_n):
         row = []
-        for c in range(GRID_SIZE):
+        for c in range(grid_n):
             p_data = pool[idx]
-            # owner: None, capturer: None, level: 지정된 레벨
             row.append({"owner": None, "capturer": None, "level": p_data["level"], "info": p_data["problem"]})
             idx += 1
         board.append(row)
@@ -272,7 +283,7 @@ def init_game():
     st.session_state.board = board
     st.session_state.game_started = True
     st.session_state.logs = []
-    add_log("게임 시작!")
+    add_log(f"게임 시작! ({grid_n}x{grid_n})")
     save_state()
 
 def update_cell_after_win(cell, winner_team, winner_id):
@@ -305,20 +316,19 @@ def update_cell_after_win(cell, winner_team, winner_id):
 
 def find_cell_by_problem_id(pid: int):
     board = st.session_state.board
-    for r in range(GRID_SIZE):
-        for c in range(GRID_SIZE):
+    current_size = len(board) # 현재 보드 크기 기반
+    for r in range(current_size):
+        for c in range(current_size):
             if board[r][c]["info"]["problemId"] == pid:
                 return (r, c)
     return None
 
 def verify_and_capture(handle: str, pid: int):
-    # 1) 참가자 확인
     participants = st.session_state.participants
     if handle not in participants:
         st.error(f"참가자가 아닙니다: {handle}")
         return
 
-    # 2) 보드 확인
     pos = find_cell_by_problem_id(pid)
     if not pos:
         st.error(f"보드에 없는 문제입니다: #{pid}")
@@ -328,12 +338,10 @@ def verify_and_capture(handle: str, pid: int):
     cell = st.session_state.board[r][c]
     winner_team = participants[handle]
 
-    # 3) 중복 확인
     if cell["owner"] == winner_team:
         st.warning("이미 우리 팀 땅입니다.")
         return
 
-    # 4) Solved.ac 조회 (핵심)
     if check_user_cleared_problem(handle, pid):
         update_cell_after_win(cell, winner_team, handle)
         st.toast(f"🎉 인증 성공! {winner_team} 팀이 점령했습니다.", icon="✅")
@@ -344,12 +352,15 @@ def verify_and_capture(handle: str, pid: int):
 
 def check_winner():
     board = st.session_state.board
+    if not board: return 0, 0
+    
+    current_size = len(board) # 동적 사이즈
     lines = []
-    for i in range(GRID_SIZE):
-        lines.append([(i, c) for c in range(GRID_SIZE)])
-        lines.append([(r, i) for r in range(GRID_SIZE)])
-    lines.append([(i, i) for i in range(GRID_SIZE)])
-    lines.append([(i, GRID_SIZE - 1 - i) for i in range(GRID_SIZE)])
+    for i in range(current_size):
+        lines.append([(i, c) for c in range(current_size)])
+        lines.append([(r, i) for r in range(current_size)])
+    lines.append([(i, i) for i in range(current_size)])
+    lines.append([(i, current_size - 1 - i) for i in range(current_size)])
 
     r_cnt, b_cnt = 0, 0
     for line in lines:
@@ -450,6 +461,13 @@ with st.sidebar:
     st.markdown("---")
 
     if not st.session_state.game_started:
+        st.markdown("### ⚙️ SETUP")
+        # [수정됨] 빙고 크기 선택 UI 추가
+        sel_size_str = st.radio("빙고판 크기 선택", ["3 x 3", "5 x 5"], index=1)
+        sel_size = 3 if sel_size_str == "3 x 3" else 5
+        
+        st.markdown("---")
+        
         st.markdown("### 🔴 RED TEAM")
         r_in = st.text_input("RED 추가", key="r_in")
         if st.button("➕ RED 추가", use_container_width=True):
@@ -493,7 +511,8 @@ with st.sidebar:
             use_container_width=True,
             disabled=not (st.session_state.red_users and st.session_state.blue_users),
         ):
-            init_game()
+            # [수정됨] 크기 인자 전달
+            init_game(sel_size)
             st.rerun()
 
     else:
@@ -503,12 +522,9 @@ with st.sidebar:
 
         all_players = st.session_state.red_users + st.session_state.blue_users
         
-        # UI: 누가 풀었나?
         selected_player = st.selectbox("1. 푼 사람 선택", all_players)
         
-        # [수정됨] UI: 몇 번을 풀었나? (text_input 사용으로 +/- 버튼 제거)
         str_pid = st.text_input("2. 문제 번호 입력", value="")
-        # 입력값이 숫자인지 체크하여 변환
         target_pid = int(str_pid) if str_pid.isdigit() else 0
 
         if st.button("✅ 인증 확인 및 점령", type="primary", use_container_width=True):
@@ -533,7 +549,7 @@ with st.sidebar:
                     st.error("비번 오류")
 
 if not st.session_state.game_started:
-    st.info("👈 왼쪽 사이드바에서 플레이어를 등록하고 게임을 시작하세요!")
+    st.info("👈 왼쪽 사이드바에서 설정 후 게임을 시작하세요!")
     st.stop()
 
 r_score, b_score = check_winner()
@@ -558,8 +574,15 @@ c3.markdown(
 
 st.write("")
 
-if r_score >= 3 or b_score >= 3:
-    win = "RED" if r_score >= 3 else "BLUE"
+# 승리 조건 체크 (현재 보드 사이즈 기준)
+current_grid_size = len(st.session_state.board)
+# 3x3이면 3줄, 5x5면 3줄 이상인지? 혹은 전체 빙고인지? 
+# 기존 로직은 "3줄 이상"이면 승리라고 되어있음 (r_score >= 3).
+# 3x3 빙고에서는 3줄 완성이면 사실상 끝이므로 3으로 유지해도 무방하나, 
+# 3줄 빙고가 승리 조건이라면 그대로 둡니다.
+win_threshold = 3
+if r_score >= win_threshold or b_score >= win_threshold:
+    win = "RED" if r_score >= win_threshold else "BLUE"
     bg = "linear-gradient(90deg,var(--red1),var(--red2))" if win == "RED" else "linear-gradient(90deg,var(--blue1),var(--blue2))"
     st.balloons()
     st.markdown(
@@ -569,11 +592,11 @@ if r_score >= 3 or b_score >= 3:
 
 st.write("")
 
-# 빙고 보드를 먼저 렌더링
+# 빙고 보드 렌더링 (동적 크기 반영)
 board = st.session_state.board
-for r in range(GRID_SIZE):
-    cols = st.columns(GRID_SIZE, gap="small")
-    for c in range(GRID_SIZE):
+for r in range(current_grid_size):
+    cols = st.columns(current_grid_size, gap="small")
+    for c in range(current_grid_size):
         with cols[c]:
             st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
 
@@ -581,14 +604,15 @@ st.write("")
 st.write("")
 st.markdown("---")
 
-# [수정됨] 플레이어 목록(Team Panel)을 보드 아래쪽으로 이동
-cap_cnt = {}
-for r in range(GRID_SIZE):
-    for c in range(GRID_SIZE):
-        cp = st.session_state.board[r][c].get("capturer")
-        if cp:
-            cap_cnt[cp] = cap_cnt.get(cp, 0) + 1
+# [수정됨] 플레이어 목록을 접었다 폈다 할 수 있게(expander) 처리
+with st.expander("📊 플레이어 현황 (Team Status)", expanded=True):
+    cap_cnt = {}
+    for r in range(current_grid_size):
+        for c in range(current_grid_size):
+            cp = st.session_state.board[r][c].get("capturer")
+            if cp:
+                cap_cnt[cp] = cap_cnt.get(cp, 0) + 1
 
-tc1, tc2 = st.columns(2, gap="medium")
-tc1.markdown(render_team_panel_html("RED", st.session_state.red_users, cap_cnt), unsafe_allow_html=True)
-tc2.markdown(render_team_panel_html("BLUE", st.session_state.blue_users, cap_cnt), unsafe_allow_html=True)
+    tc1, tc2 = st.columns(2, gap="medium")
+    tc1.markdown(render_team_panel_html("RED", st.session_state.red_users, cap_cnt), unsafe_allow_html=True)
+    tc2.markdown(render_team_panel_html("BLUE", st.session_state.blue_users, cap_cnt), unsafe_allow_html=True)
