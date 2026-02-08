@@ -597,9 +597,7 @@ for r in range(current_grid_size):
 tc1, tc2 = st.columns(2, gap="medium")
 
 with tc1:
-    with st.expander("🔴 RED TEAM", expanded=True):
-         st.markdown(render_team_panel_html("RED", st.session_state.red_users, cap_cnt), unsafe_allow_html=True)
+    st.markdown(render_team_panel_html("RED", st.session_state.red_users, cap_cnt), unsafe_allow_html=True)
 
 with tc2:
-    with st.expander("🔵 BLUE TEAM", expanded=True):
-         st.markdown(render_team_panel_html("BLUE", st.session_state.blue_users, cap_cnt), unsafe_allow_html=True)
+    st.markdown(render_team_panel_html("BLUE", st.session_state.blue_users, cap_cnt), unsafe_allow_html=True)
