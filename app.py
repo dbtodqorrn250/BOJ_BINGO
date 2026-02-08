@@ -47,7 +47,7 @@ header[data-testid="stHeader"] > div { pointer-events: auto; }
 
 :root{ --bg:#0b1220; --panel:#101a2f; --card:#0f1a30; --border:rgba(255,255,255,.09); --text:#eaf1ff; --muted:#b9c5e6; --muted2:#8ea0c9; --red1:#ff4d6d; --red2:#c9184a; --blue1:#4dabf7; --blue2:#1864ab; --shadow: 0 14px 35px rgba(0,0,0,.35); }
 .stApp{ background: radial-gradient(1200px 600px at 30% 10%, rgba(77,171,247,.15), transparent 55%), radial-gradient(900px 600px at 80% 30%, rgba(255,77,109,.12), transparent 55%), var(--bg); color: var(--text); font-family: 'Pretendard',sans-serif; }
-h1,h2,h3,h4,h5,h6,p,span,div { color: var(--text) !important; }
+h1,h2,h3,h4 { color: var(--text) !important; }
 section[data-testid="stSidebar"]{ background: linear-gradient(180deg, rgba(16,26,47,.95), rgba(10,16,30,.95)); border-right: 1px solid var(--border); }
 hr { border-color: rgba(255,255,255,.08) !important; }
 
@@ -586,6 +586,7 @@ st.write("")
 st.write("")
 st.markdown("---")
 
+# [수정됨] 플레이어 목록(Team Status)을 RED, BLUE 각각 expander로 분리
 cap_cnt = {}
 for r in range(current_grid_size):
     for c in range(current_grid_size):
@@ -593,9 +594,12 @@ for r in range(current_grid_size):
         if cp:
             cap_cnt[cp] = cap_cnt.get(cp, 0) + 1
 
-# [수정됨] expander 제거하고 바로 나열
 tc1, tc2 = st.columns(2, gap="medium")
+
 with tc1:
-    st.markdown(render_team_panel_html("RED", st.session_state.red_users, cap_cnt), unsafe_allow_html=True)
+    with st.expander("🔴 RED TEAM", expanded=True):
+         st.markdown(render_team_panel_html("RED", st.session_state.red_users, cap_cnt), unsafe_allow_html=True)
+
 with tc2:
-    st.markdown(render_team_panel_html("BLUE", st.session_state.blue_users, cap_cnt), unsafe_allow_html=True)
+    with st.expander("🔵 BLUE TEAM", expanded=True):
+         st.markdown(render_team_panel_html("BLUE", st.session_state.blue_users, cap_cnt), unsafe_allow_html=True)
