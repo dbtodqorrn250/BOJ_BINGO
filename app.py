@@ -230,9 +230,20 @@ def init_game():
 
     filter_query = " ".join([f"-s@{u}" for u in participants.keys()]).strip()
 
+    # [수정됨] 레벨 1~5를 각각 5개씩 생성하고 섞습니다.
+    initial_levels = []
+    for lv in range(1, 6):
+        initial_levels.extend([lv] * 5)
+    random.shuffle(initial_levels)
+
     pool = []
-    for _ in range(GRID_SIZE * GRID_SIZE):
-        items = fetch_problems_with_filter(1, filter_query)
+    
+    # 25개의 칸을 채우기 위해 섞인 레벨 리스트를 순회합니다.
+    for i in range(GRID_SIZE * GRID_SIZE):
+        target_lv = initial_levels[i]
+        items = fetch_problems_with_filter(target_lv, filter_query)
+        
+        # 해당 레벨 문제가 없으면 그냥 레벨1이나 아무거나 가져오는 예외처리
         if not items:
             items = fetch_problems_with_filter(1, "")
 
@@ -245,14 +256,16 @@ def init_game():
         if not candidate:
             candidate = items[0] if items else {"problemId": 0, "titleKo": "Error", "level": 0}
 
-        pool.append(candidate)
+        pool.append({"problem": candidate, "level": target_lv})
         st.session_state.used_problem_ids.add(candidate["problemId"])
 
     idx = 0
     for r in range(GRID_SIZE):
         row = []
         for c in range(GRID_SIZE):
-            row.append({"owner": None, "capturer": None, "level": 1, "info": pool[idx]})
+            p_data = pool[idx]
+            # owner: None, capturer: None, level: 지정된 레벨
+            row.append({"owner": None, "capturer": None, "level": p_data["level"], "info": p_data["problem"]})
             idx += 1
         board.append(row)
 
@@ -493,11 +506,16 @@ with st.sidebar:
         # UI: 누가 풀었나?
         selected_player = st.selectbox("1. 푼 사람 선택", all_players)
         
-        # UI: 몇 번을 풀었나?
-        target_pid = st.number_input("2. 문제 번호 입력", min_value=1000, value=1000, step=1)
+        # [수정됨] UI: 몇 번을 풀었나? (text_input 사용으로 +/- 버튼 제거)
+        str_pid = st.text_input("2. 문제 번호 입력", value="")
+        # 입력값이 숫자인지 체크하여 변환
+        target_pid = int(str_pid) if str_pid.isdigit() else 0
 
         if st.button("✅ 인증 확인 및 점령", type="primary", use_container_width=True):
-            verify_and_capture(selected_player, int(target_pid))
+            if target_pid > 0:
+                verify_and_capture(selected_player, target_pid)
+            else:
+                st.error("올바른 문제 번호를 입력해주세요.")
 
         st.markdown("---")
         st.markdown("### 📜 Logs")
@@ -549,6 +567,21 @@ if r_score >= 3 or b_score >= 3:
         unsafe_allow_html=True,
     )
 
+st.write("")
+
+# 빙고 보드를 먼저 렌더링
+board = st.session_state.board
+for r in range(GRID_SIZE):
+    cols = st.columns(GRID_SIZE, gap="small")
+    for c in range(GRID_SIZE):
+        with cols[c]:
+            st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
+
+st.write("")
+st.write("")
+st.markdown("---")
+
+# [수정됨] 플레이어 목록(Team Panel)을 보드 아래쪽으로 이동
 cap_cnt = {}
 for r in range(GRID_SIZE):
     for c in range(GRID_SIZE):
@@ -559,15 +592,3 @@ for r in range(GRID_SIZE):
 tc1, tc2 = st.columns(2, gap="medium")
 tc1.markdown(render_team_panel_html("RED", st.session_state.red_users, cap_cnt), unsafe_allow_html=True)
 tc2.markdown(render_team_panel_html("BLUE", st.session_state.blue_users, cap_cnt), unsafe_allow_html=True)
-
-st.write("")
-
-board = st.session_state.board
-for r in range(GRID_SIZE):
-    cols = st.columns(GRID_SIZE, gap="small")
-    for c in range(GRID_SIZE):
-        with cols[c]:
-            st.markdown(render_cell_html(board[r][c]), unsafe_allow_html=True)
-
-
-
