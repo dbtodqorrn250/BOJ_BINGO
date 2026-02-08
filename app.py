@@ -90,7 +90,6 @@ def get_google_sheet_connection():
         return None
 
 def save_state():
-    # [수정됨] grid_size 정보도 저장해야 함
     keys = ["game_started", "red_users", "blue_users", "logs", "board", "participants", "grid_size"]
     data = {}
     for k in keys:
@@ -206,7 +205,7 @@ def init_state():
             st.session_state.blue_users = []
             st.session_state.logs = []
             st.session_state.used_problem_ids = set()
-            st.session_state.grid_size = 5 # 기본값
+            st.session_state.grid_size = 5
 
 def add_log(msg: str):
     st.session_state.logs.insert(0, msg)
@@ -214,7 +213,6 @@ def add_log(msg: str):
     save_state()
 
 def init_game(size_choice: int):
-    # [수정됨] Grid Size 저장
     st.session_state.grid_size = size_choice
     grid_n = size_choice
 
@@ -229,29 +227,22 @@ def init_game(size_choice: int):
 
     filter_query = " ".join([f"-s@{u}" for u in participants.keys()]).strip()
 
-    # [수정됨] 3x3 vs 5x5 난이도 분포 로직 분기
     initial_levels = []
     if grid_n == 5:
-        # 5x5: 각 레벨 5개씩 (총 25)
+        # 5x5: 각 레벨 5개씩
         for lv in range(1, 6):
             initial_levels.extend([lv] * 5)
     else:
-        # 3x3: 요청하신 대로 (1:2개, 2:2개, 3:1개, 4:2개, 5:2개) -> 총 9개
-        # Lv1: 2개
+        # 3x3: 1(2), 2(2), 3(1), 4(2), 5(2)
         initial_levels.extend([1] * 2)
-        # Lv2: 2개
         initial_levels.extend([2] * 2)
-        # Lv3: 1개
         initial_levels.extend([3] * 1)
-        # Lv4: 2개
         initial_levels.extend([4] * 2)
-        # Lv5: 2개
         initial_levels.extend([5] * 2)
     
     random.shuffle(initial_levels)
 
     pool = []
-    # 선택된 Grid 크기만큼 문제 생성
     for i in range(grid_n * grid_n):
         target_lv = initial_levels[i]
         items = fetch_problems_with_filter(target_lv, filter_query)
@@ -316,7 +307,7 @@ def update_cell_after_win(cell, winner_team, winner_id):
 
 def find_cell_by_problem_id(pid: int):
     board = st.session_state.board
-    current_size = len(board) # 현재 보드 크기 기반
+    current_size = len(board)
     for r in range(current_size):
         for c in range(current_size):
             if board[r][c]["info"]["problemId"] == pid:
@@ -353,8 +344,7 @@ def verify_and_capture(handle: str, pid: int):
 def check_winner():
     board = st.session_state.board
     if not board: return 0, 0
-    
-    current_size = len(board) # 동적 사이즈
+    current_size = len(board)
     lines = []
     for i in range(current_size):
         lines.append([(i, c) for c in range(current_size)])
@@ -462,7 +452,6 @@ with st.sidebar:
 
     if not st.session_state.game_started:
         st.markdown("### ⚙️ SETUP")
-        # [수정됨] 빙고 크기 선택 UI 추가
         sel_size_str = st.radio("빙고판 크기 선택", ["3 x 3", "5 x 5"], index=1)
         sel_size = 3 if sel_size_str == "3 x 3" else 5
         
@@ -511,7 +500,6 @@ with st.sidebar:
             use_container_width=True,
             disabled=not (st.session_state.red_users and st.session_state.blue_users),
         ):
-            # [수정됨] 크기 인자 전달
             init_game(sel_size)
             st.rerun()
 
@@ -574,12 +562,7 @@ c3.markdown(
 
 st.write("")
 
-# 승리 조건 체크 (현재 보드 사이즈 기준)
 current_grid_size = len(st.session_state.board)
-# 3x3이면 3줄, 5x5면 3줄 이상인지? 혹은 전체 빙고인지? 
-# 기존 로직은 "3줄 이상"이면 승리라고 되어있음 (r_score >= 3).
-# 3x3 빙고에서는 3줄 완성이면 사실상 끝이므로 3으로 유지해도 무방하나, 
-# 3줄 빙고가 승리 조건이라면 그대로 둡니다.
 win_threshold = 3
 if r_score >= win_threshold or b_score >= win_threshold:
     win = "RED" if r_score >= win_threshold else "BLUE"
@@ -592,7 +575,6 @@ if r_score >= win_threshold or b_score >= win_threshold:
 
 st.write("")
 
-# 빙고 보드 렌더링 (동적 크기 반영)
 board = st.session_state.board
 for r in range(current_grid_size):
     cols = st.columns(current_grid_size, gap="small")
@@ -604,15 +586,20 @@ st.write("")
 st.write("")
 st.markdown("---")
 
-# [수정됨] 플레이어 목록을 접었다 폈다 할 수 있게(expander) 처리
-with st.expander("📊 플레이어 현황 (Team Status)", expanded=True):
-    cap_cnt = {}
-    for r in range(current_grid_size):
-        for c in range(current_grid_size):
-            cp = st.session_state.board[r][c].get("capturer")
-            if cp:
-                cap_cnt[cp] = cap_cnt.get(cp, 0) + 1
+# [수정됨] 플레이어 목록(Team Status)을 RED, BLUE 각각 expander로 분리
+cap_cnt = {}
+for r in range(current_grid_size):
+    for c in range(current_grid_size):
+        cp = st.session_state.board[r][c].get("capturer")
+        if cp:
+            cap_cnt[cp] = cap_cnt.get(cp, 0) + 1
 
-    tc1, tc2 = st.columns(2, gap="medium")
-    tc1.markdown(render_team_panel_html("RED", st.session_state.red_users, cap_cnt), unsafe_allow_html=True)
-    tc2.markdown(render_team_panel_html("BLUE", st.session_state.blue_users, cap_cnt), unsafe_allow_html=True)
+tc1, tc2 = st.columns(2, gap="medium")
+
+with tc1:
+    with st.expander("🔴 RED TEAM", expanded=True):
+         st.markdown(render_team_panel_html("RED", st.session_state.red_users, cap_cnt), unsafe_allow_html=True)
+
+with tc2:
+    with st.expander("🔵 BLUE TEAM", expanded=True):
+         st.markdown(render_team_panel_html("BLUE", st.session_state.blue_users, cap_cnt), unsafe_allow_html=True)
