@@ -35,7 +35,7 @@ SOLVED_SEARCH = "https://solved.ac/api/v3/search/problem"
 SOLVED_USER_SHOW = "https://solved.ac/api/v3/user/show"
 
 # =========================================================
-# 1) UI 스타일 (수정됨: Expander 스타일 추가)
+# 1) UI 스타일
 # =========================================================
 st.markdown("""
 <style>
@@ -50,27 +50,6 @@ header[data-testid="stHeader"] > div { pointer-events: auto; }
 h1,h2,h3,h4,h5,h6,p,span,div { color: var(--text) !important; }
 section[data-testid="stSidebar"]{ background: linear-gradient(180deg, rgba(16,26,47,.95), rgba(10,16,30,.95)); border-right: 1px solid var(--border); }
 hr { border-color: rgba(255,255,255,.08) !important; }
-
-/* Expander(접는 메뉴) 스타일 강제 수정 */
-[data-testid="stExpander"] {
-    background-color: transparent !important;
-    border: none !important;
-}
-[data-testid="stExpander"] details {
-    border-color: rgba(255, 255, 255, 0.1) !important;
-    background-color: rgba(255, 255, 255, 0.02) !important;
-    border-radius: 15px !important;
-}
-[data-testid="stExpander"] summary {
-    color: #eaf1ff !important;
-    font-weight: 700 !important;
-}
-[data-testid="stExpander"] summary:hover {
-    color: #4dabf7 !important;
-}
-[data-testid="stExpander"] div[role="group"] {
-    padding-top: 10px !important;
-}
 
 a.problem-link{ text-decoration:none; color: var(--muted); font-size: .78rem; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,.03); display: inline-block; }
 a.problem-link:hover{ color: var(--text); border-color: rgba(255,255,255,.2); }
@@ -614,12 +593,9 @@ for r in range(current_grid_size):
         if cp:
             cap_cnt[cp] = cap_cnt.get(cp, 0) + 1
 
+# [수정됨] expander 제거하고 바로 나열
 tc1, tc2 = st.columns(2, gap="medium")
-
 with tc1:
-    with st.expander("🔴 RED TEAM", expanded=True):
-         st.markdown(render_team_panel_html("RED", st.session_state.red_users, cap_cnt), unsafe_allow_html=True)
-
+    st.markdown(render_team_panel_html("RED", st.session_state.red_users, cap_cnt), unsafe_allow_html=True)
 with tc2:
-    with st.expander("🔵 BLUE TEAM", expanded=True):
-         st.markdown(render_team_panel_html("BLUE", st.session_state.blue_users, cap_cnt), unsafe_allow_html=True)
+    st.markdown(render_team_panel_html("BLUE", st.session_state.blue_users, cap_cnt), unsafe_allow_html=True)
