@@ -24,11 +24,11 @@ except:
     ADMIN_PASSWORD = "1234"
 
 LEVEL_MAPPING = {
-    1: "6..10",
-    2: "11..13",
-    3: "14..16",
-    4: "17..19",
-    5: "20..23",
+    1: "6..9",
+    2: "10..13",
+    3: "14..17",
+    4: "18..21",
+    5: "22..25",
 }
 
 SOLVED_SEARCH = "https://solved.ac/api/v3/search/problem"
@@ -661,4 +661,5 @@ with tc1:
 
 with tc2:
     st.markdown(render_team_panel_html("BLUE", st.session_state.blue_users, cap_cnt), unsafe_allow_html=True)
+
 
